@@ -511,6 +511,7 @@
         </div>
 
         <div id="video-desc" class="text-[15px] leading-relaxed text-[#cbd5e1] max-w-2xl"></div>
+        <div id="claim-stake-info" class="mt-2 text-xs text-[#64748b]"></div>
       </div>
 
       <!-- More to Watch -->
@@ -527,7 +528,7 @@
     <div id="view-feed" class="view">
       <div class="mb-6">
         <div class="text-[28px] font-semibold tracking-[-0.4px]">Feed</div>
-        <div class="text-sm text-[#64748b]">Trending across the LBRY network</div>
+        <div class="text-sm text-[#64748b]">Highest LBC support (most deposited into claims)</div>
       </div>
       <div id="feed-grid" class="content-grid"></div>
     </div>
@@ -699,6 +700,15 @@
             </div>
             <div id="wallet-seed-display" class="mt-4 text-xs bg-[#0a0a0f] p-3 rounded hidden font-mono break-all"></div>
             <div class="text-xs text-red-400 mt-2 hidden" id="wallet-delete-confirm">ARE YOU SURE YOU WANT TO DELETE YOUR WALLET? This cannot be undone.</div>
+          </div>
+
+          <!-- Reset View Data / Caches -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6 mt-6">
+            <div class="mb-3">
+              <div class="text-sm font-semibold tracking-wide">Reset View Data & Caches</div>
+              <div class="text-xs text-[#64748b] mt-1">Clears cached feeds (including stale Latest data), vault, and history. Useful for resolving lingering data from previous configurations. May require reloading the player tab or reopening the popup.</div>
+            </div>
+            <button id="reset-data-btn" class="action-btn flex-1 justify-center bg-red-900 border-red-700 text-red-300 hover:bg-red-800">Reset All View Data & Caches</button>
           </div>
         </div>
       </div>

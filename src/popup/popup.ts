@@ -1,9 +1,9 @@
 // ReviveL Popup — Premium UX
 // Large comfortable window, elegant spacing, in-popup settings, floating video player
 
-import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed } from '../utils/lbryApi.js';
+import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed, getClaimTimestamp } from '../utils/lbryApi.js';
 
-interface LbryItem { id: string; title: string; channel: string; views: string; thumbnail: string; duration: string; lbryUri: string; type: 'video'|'image'; date: string }
+interface LbryItem { id: string; title: string; channel: string; thumbnail: string; duration: string; lbryUri: string; type: 'video'|'image'; timestamp: number; uploaded: string; isLocked: boolean; fee: string; staked: number; }
 interface VaultItem { id: string; title: string; description: string; imageData: string; lbryUri: string; channel: string; date: string }
 
 let feedItems: LbryItem[] = []
@@ -15,26 +15,94 @@ let vault: VaultItem[] = []
 let noDaemonConnection = true
 let currentStatus: any = null;
 
+let feedLoading = true;
+let latestLoading = true;
+let feedHasError = false;
+let latestHasError = false;
+
+function formatUploadTime(timestamp: number): string {
+  if (!timestamp) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - timestamp;
+
+  const minute = 60;
+  const hour = minute * 60;
+  const day = hour * 24;
+  const week = day * 7;
+
+  if (diff < minute) return 'just now';
+  if (diff < hour) return `${Math.floor(diff / minute)} min ago`;
+  if (diff < day) return `${Math.floor(diff / hour)} hour${Math.floor(diff / hour) > 1 ? 's' : ''} ago`;
+  if (diff < week * 4) {
+    const weeks = Math.floor(diff / week);
+    return `${weeks} week${weeks > 1 ? 's' : ''} ago`;
+  }
+
+  // Over 4 weeks: show date like "10 Jan 2026"
+  const date = new Date(timestamp * 1000);
+  const dayNum = date.getDate();
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
+  return `${dayNum} ${month} ${year}`;
+}
+
 function mapClaimToItem(claim: any): LbryItem {
   const value = claim.value || {}
   const thumbnail = value.thumbnail?.url || 'https://picsum.photos/id/1015/320/180'
   const channel = claim.signing_channel?.name || '@unknown'
-  const views = claim.meta?.effective_amount ? `${claim.meta.effective_amount} LBC` : ''
   const lbryUri = claim.canonical_url || `lbry://${claim.name}`
+  const timestamp = getClaimTimestamp(claim);
+  const uploaded = formatUploadTime(timestamp);
+
+  // Paywall detection (LBRY fee on stream)
+  const fee = value.fee || value.stream?.fee || null;
+  const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0);
+  const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : '';
+
+  // Total staked (claim + supports)
+  const cAmt = parseFloat(claim.amount || 0);
+  const sAmt = parseFloat(claim.meta?.support_amount || 0);
+  let staked = cAmt + sAmt;
+  if (!staked && claim.meta?.effective_amount) {
+    staked = parseFloat(claim.meta.effective_amount);
+  }
+
   return {
     id: claim.claim_id || Math.random().toString(),
     title: value.title || claim.name || 'Untitled',
     channel,
-    views,
     thumbnail,
     duration: '—',
     lbryUri,
     type: 'video',
-    date: 'recent'
+    timestamp,
+    uploaded,
+    isLocked,
+    fee: feeStr,
+    staked
   }
 }
 
 async function fetchRealFeed(tab: 'feed' | 'latest') {
+  const isFeed = tab === 'feed';
+  const currentItems = isFeed ? feedItems : latestItems;
+  const hasData = currentItems.length > 0;
+
+  if (isFeed) {
+    feedHasError = false;
+    if (!hasData) {
+      feedLoading = true;
+      renderContent();
+    }
+  } else {
+    latestHasError = false;
+    if (!hasData) {
+      latestLoading = true;
+      renderContent();
+    }
+  }
+
   // Check status for flag (but always attempt search via proxy if needed)
   try {
     const daemonStatus = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
@@ -50,12 +118,32 @@ async function fetchRealFeed(tab: 'feed' | 'latest') {
       page: 1,
     }
     if (tab === 'feed') {
-      params.order_by = ['trending_global']
+      // Feed = highest LBC support (effective_amount includes deposited supports).
+      // Sort client-side for reliability (same as player).
+      params.order_by = ['effective_amount']
     } else {
+      // release_time to bias toward recent (proxy returns recent items); client-side
+      // getClaimTimestamp + filter removes any polluted by bad release_time values
       params.order_by = ['release_time']
     }
     const result = await searchLbryClaims(params)
-    const items = (result.items || []).map(mapClaimToItem)
+    let rawItems = (result.items || [])
+    if (tab === 'feed') {
+      rawItems = rawItems.sort((a: any, b: any) => {
+        const be = (b.meta?.effective_amount || 0)
+        const ae = (a.meta?.effective_amount || 0)
+        return be - ae
+      })
+    }
+    let items = rawItems.map(mapClaimToItem)
+    if (tab === 'latest' || !isFeed) {
+      // Strict recent filter + sort by reliable timestamp (getClaimTimestamp prefers meta.creation_timestamp).
+      // Drops stale items that polluted server results due to bad value.release_time.
+      const nowSec = Math.floor(Date.now() / 1000)
+      const minLatestTs = nowSec - (86400 * 400)
+      items = items.filter((it: any) => it.timestamp > minLatestTs)
+        .sort((a, b) => b.timestamp - a.timestamp)
+    }
     if (tab === 'feed') {
       feedItems = items
     } else {
@@ -63,8 +151,24 @@ async function fetchRealFeed(tab: 'feed' | 'latest') {
     }
   } catch (e) {
     console.warn('Real feed fetch failed', e)
-    if (tab === 'feed') feedItems = []
-    else latestItems = []
+    if (tab === 'feed') {
+      feedItems = [];
+      feedHasError = true;
+    } else {
+      latestItems = [];
+      latestHasError = true;
+    }
+  } finally {
+    if (tab === 'feed') {
+      feedLoading = false;
+    } else {
+      latestLoading = false;
+    }
+    const shouldRenderCurrent = !searchTerm &&
+      ((tab === 'feed' && currentTab === 'feed') || (tab === 'latest' && currentTab === 'new'));
+    if (shouldRenderCurrent) {
+      renderContent();
+    }
   }
 }
 
@@ -81,8 +185,15 @@ async function performRealSearch(query: string) {
     }
   } catch (_) {
     noDaemonConnection = true;
-    if (currentTab === 'feed') feedItems = [];
-    else latestItems = [];
+    if (currentTab === 'feed') {
+      feedItems = [];
+      feedHasError = true;
+      feedLoading = false;
+    } else {
+      latestItems = [];
+      latestHasError = true;
+      latestLoading = false;
+    }
     renderContent();
     return;
   }
@@ -92,6 +203,15 @@ async function performRealSearch(query: string) {
     renderContent()
     return
   }
+
+  // When searching, stop any loading animation for the feed view
+  if (currentTab === 'feed') {
+    feedLoading = false;
+  } else {
+    latestLoading = false;
+  }
+  stopLoadingAnimation();
+
   try {
     noDaemonConnection = false;
     const params: any = {
@@ -99,10 +219,13 @@ async function performRealSearch(query: string) {
       claim_type: 'stream',
       page_size: 10,
       page: 1,
-      order_by: ['trending_global']
+      order_by: ['effective_amount']
     }
     const result = await searchLbryClaims(params)
-    const items = (result.items || []).map(mapClaimToItem)
+    let items = (result.items || []).map(mapClaimToItem)
+    if (currentTab === 'new') {
+      items = items.sort((a, b) => b.timestamp - a.timestamp)
+    }
     if (currentTab === 'feed') {
       feedItems = items
     } else {
@@ -111,9 +234,15 @@ async function performRealSearch(query: string) {
     renderContent()
   } catch (e) {
     console.warn('Real search failed', e)
-    // on error, render will show no connection if items empty
-    if (currentTab === 'feed') feedItems = [];
-    else latestItems = [];
+    if (currentTab === 'feed') {
+      feedItems = [];
+      feedHasError = true;
+      feedLoading = false;
+    } else {
+      latestItems = [];
+      latestHasError = true;
+      latestLoading = false;
+    }
     renderContent()
   }
 }
@@ -133,6 +262,8 @@ async function saveVault() { await chrome.storage.local.set({revivel_vault: vaul
 function renderContent() {
   const c = document.getElementById('content-area')!
   c.innerHTML = ''
+  stopLoadingAnimation();
+
   if (currentTab === 'vault') { renderVault(c); return }
   if (currentTab === 'wallet') { renderWallet(c); return }
 
@@ -152,8 +283,29 @@ function renderContent() {
     return;
   }
 
-  // for other cases (though only vault left)
+  // for other cases
   doRenderFeedItems();
+}
+
+let loadingInterval: any = null;
+
+function startLoadingAnimation() {
+  stopLoadingAnimation();
+  const el = document.getElementById('feed-loading');
+  if (!el) return;
+  let dots = 3;
+  el.textContent = 'Loading' + '.'.repeat(dots);
+  loadingInterval = setInterval(() => {
+    dots = (dots + 1) % 4;
+    if (el) el.textContent = 'Loading' + '.'.repeat(dots);
+  }, 350);
+}
+
+function stopLoadingAnimation() {
+  if (loadingInterval) {
+    clearInterval(loadingInterval);
+    loadingInterval = null;
+  }
 }
 
 function doRenderFeedItems() {
@@ -161,17 +313,41 @@ function doRenderFeedItems() {
   c.innerHTML = '';
   if (currentTab === 'vault') { renderVault(c); return; }
 
-  let items = currentTab === 'feed' ? [...feedItems] : [...latestItems];
+  const isFeedTab = currentTab === 'feed';
+  let items = isFeedTab ? [...feedItems] : [...latestItems];
+  const loading = isFeedTab ? feedLoading : latestLoading;
+  const hasError = isFeedTab ? feedHasError : latestHasError;
 
   if (searchTerm) {
     const q = searchTerm.toLowerCase()
     items = items.filter(i => i.title.toLowerCase().includes(q) || i.channel.toLowerCase().includes(q))
+    if (!items.length) {
+      stopLoadingAnimation();
+      c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">No matches found.</div>`
+      return
+    }
+  } else if (loading) {
+    c.innerHTML = `
+      <div style="display:flex; align-items:center; justify-content:center; height:100%; min-height:200px;">
+        <div id="feed-loading" style="font-size:18px; color:#64748b; text-align:center;">Loading...</div>
+      </div>
+    `;
+    startLoadingAnimation();
+    return;
+  } else if (hasError) {
+    stopLoadingAnimation();
+    const msg = noDaemonConnection
+      ? 'Unable to load feed.<br>Connection issue — using public data if available.'
+      : 'Failed to load content.<br>Please try again.';
+    c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">${msg}</div>`;
+    return;
+  } else if (!items.length) {
+    stopLoadingAnimation();
+    c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">No content available.</div>`;
+    return;
   }
 
-  if (!items.length) {
-    c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">No matches found.</div>`
-    return
-  }
+  stopLoadingAnimation();
 
   const list = document.createElement('div')
   list.className = 'content-grid'
@@ -179,16 +355,20 @@ function doRenderFeedItems() {
   items.forEach(it => {
     const row = document.createElement('div')
     row.className = 'claim-card'
+    const stakedHtml = it.staked > 0.01 
+      ? `<div class="text-[9px] text-emerald-400 mt-0.5">${it.staked.toLocaleString(undefined, {maximumFractionDigits: 0})} LBC staked</div>` 
+      : '';
     row.innerHTML = `
       <img src="${it.thumbnail}" alt="">
       <div class="p-2">
         <div class="text-sm font-semibold leading-tight line-clamp-2">${it.title}</div>
-        <div class="flex items-center justify-between mt-1">
-          <div class="text-[10px] text-[#64748b] truncate max-w-[68%]">
-            <span>${it.channel}</span>
-            ${it.views ? `<span class="opacity-60"> • ${it.views}</span>` : ''}
+        <div class="flex items-start justify-between mt-1">
+          <div class="text-[10px] text-[#64748b] flex-1 min-w-0">
+            <div class="truncate">${it.channel}</div>
+            <div class="text-[9px] ${it.isLocked ? 'text-amber-500' : 'opacity-70'}">${it.isLocked ? `🔒 ${it.fee}` : it.uploaded}</div>
+            ${stakedHtml}
           </div>
-          <button class="play-btn">Play</button>
+          <button class="play-btn mt-0.5">Play</button>
         </div>
       </div>
     `
@@ -536,6 +716,15 @@ function showSettings() {
         <div id="wallet-seed" class="text-[10px] font-mono bg-[#0a0a0f] p-1.5 rounded break-all hidden"></div>
         <div id="wallet-delete-warning" class="text-[10px] text-red-400 mt-1 hidden">ARE YOU SURE? Cannot be undone.</div>
       </div>
+
+      <!-- Reset View Data -->
+      <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6 mt-6">
+        <div class="mb-3">
+          <div class="text-sm font-semibold tracking-wide">Reset View Data & Caches</div>
+          <div class="text-xs text-[#64748b] mt-1">Clears cached feeds (Latest etc), vault, and history.</div>
+        </div>
+        <button id="reset-data-btn" class="action-btn flex-1 justify-center bg-red-900 border-red-700 text-red-300 hover:bg-red-800">Reset All View Data & Caches</button>
+      </div>
     </div>
   `
 
@@ -724,12 +913,41 @@ function showSettings() {
     try { await deleteWallet(); alert('Wallet deleted'); if(wWarn) wWarn.classList.add('hidden'); delConfirm=false } catch(e: any){ alert('Delete: '+e.message) }
   }
 
+  // Reset view data button in popup settings
+  const resetBtn = document.getElementById('reset-data-btn')
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!confirm('Reset view data and caches?')) return;
+      feedItems = [];
+      latestItems = [];
+      vault = [];
+      await chrome.storage.local.remove(['revivel_vault', 'revivel_history']);
+      // Force fresh fetch so Latest (and Feed) actually get new content
+      feedLoading = true;
+      latestLoading = true;
+      renderContent();
+      // Re-fetch the current tab's data (or both)
+      try {
+        await fetchRealFeed(currentTab === 'feed' ? 'feed' : 'latest');
+      } catch (_) {}
+      alert('Caches cleared. Fresh data loaded.');
+    }
+  }
+
   document.getElementById('settings-back')!.onclick = () => renderContent()
 }
 
 async function initPopup() {
   initTailwind()
   await loadVault()
+
+  // Always fetch fresh for feed/latest to avoid stale data from previous configs/sessions
+  feedItems = [];
+  latestItems = [];
+  feedLoading = true;
+  latestLoading = true;
+  feedHasError = false;
+  latestHasError = false;
 
   // Always render something and attach listeners first (do not block on status messages)
   try { updateTabs(); renderContent(); } catch {}
@@ -739,11 +957,11 @@ async function initPopup() {
       const tab = (b as HTMLElement).dataset.tab as 'feed' | 'new' | 'vault' | 'wallet'
       if (tab) {
         currentTab = tab
+        searchTerm = ''  // clear search when switching tabs
         updateTabs()
-        if (!searchTerm && tab !== 'vault' && tab !== 'wallet') {
-          fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest').then(() => renderContent())
-        } else {
-          renderContent()
+        renderContent()
+        if (tab !== 'vault' && tab !== 'wallet') {
+          fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest')
         }
       }
     })
@@ -754,13 +972,14 @@ async function initPopup() {
     let searchDebounce: any
     s.addEventListener('input', () => {
       searchTerm = s.value
+      stopLoadingAnimation();
       clearTimeout(searchDebounce)
       searchDebounce = setTimeout(() => {
         if (searchTerm.length > 1) {
           performRealSearch(searchTerm)
         } else {
           // restore current tab's default feed
-          fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest').then(() => renderContent())
+          fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest')
         }
       }, 350)
     })
@@ -792,9 +1011,7 @@ async function initPopup() {
 
   // Fetch real LBRY content for feeds and latest
   fetchRealFeed('feed')
-  fetchRealFeed('latest').then(() => {
-    if (!searchTerm) renderContent()
-  })
+  fetchRealFeed('latest')
 
   // Status checks (async, non-blocking)
   updateHeaderStatus()
@@ -823,9 +1040,7 @@ async function initPopup() {
   chrome.runtime.onMessage.addListener((msg: any) => {
     if (msg.type === 'newBlock') {
       console.log('[ReviveL Popup] New block:', msg.height);
-      fetchRealFeed('latest').then(() => {
-        if (currentTab === 'new' && !searchTerm) renderContent();
-      });
+      fetchRealFeed('latest');
     }
   });
 

@@ -2,7 +2,8 @@
 import { 
   resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, 
   getDaemonStatus, setDaemonUrl,
-  getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed
+  getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed,
+  getClaimTimestamp
 } from '../utils/lbryApi.js'
 
 let currentUri = new URLSearchParams(location.search).get('uri') || 'lbry://what'
@@ -109,19 +110,45 @@ async function loadVideo(uri: string) {
 
     const title = claim.title || claim.value?.title || uri
     const channel = claim.signing_channel?.name || claim.channel || '@unknown'
-    const views = claim.meta?.effective_amount || ''
     const desc = claim.value?.description || claim.description || ''
 
     metaEl.innerHTML = `
       <div>
         <div style="font-size:1.5rem; font-weight:600; letter-spacing:-0.025em; line-height:1.2;">${title}</div>
-        <div style="font-size:0.875rem; color:#94a3b8; margin-top:4px;">${channel} ${views ? '• ' + views + ' LBC' : ''}</div>
+        <div style="font-size:0.875rem; color:#94a3b8; margin-top:4px;">${channel}</div>
         <div style="font-size:10px; font-family:monospace; color:#14b8a6; margin-top:4px;">${uri}</div>
       </div>
     `
     descEl.textContent = desc.length > 420 ? desc.slice(0, 420) + '…' : desc
     document.title = title + ' • ReviveL'
     initialTitle = null // clear so future navigations use resolved data
+
+    // Total staked = claim amount + supports (per https://lbry.tech/spec/#stakes)
+    const stakeEl = document.getElementById('claim-stake-info') as HTMLElement | null;
+    if (stakeEl) {
+      // Clean up any legacy dynamically-inserted duplicate stake divs from previous loads
+      document.querySelectorAll('.revivel-stake-info').forEach(el => el.remove());
+
+      const claimAmt = parseFloat(claim.amount || 0);
+      const supportAmt = parseFloat(claim.meta?.support_amount || 0);
+      let totalStaked = claimAmt + supportAmt;
+      if (!totalStaked && claim.meta?.effective_amount) {
+        totalStaked = parseFloat(claim.meta.effective_amount);
+      }
+      const fee = claim.value?.fee || claim.value?.stream?.fee || null;
+      const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0);
+      const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : '';
+
+      let html = '';
+      if (totalStaked > 0) {
+        const formatted = totalStaked.toLocaleString(undefined, { maximumFractionDigits: 2 });
+        html += `<div>Total staked: ${formatted} LBC</div>`;
+      }
+      if (isLocked) {
+        html += `<div style="color:#f59e0b;">🔒 Paywall: ${feeStr} to unlock</div>`;
+      }
+      stakeEl.innerHTML = html;
+    }
 
     let playable = getPlayableUrl(claim)
 
@@ -178,19 +205,30 @@ async function loadMoreToWatch(excludeUri: string) {
   grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading 15 suggestions…</div>`
 
   try {
-    const [trending, recent] = await Promise.all([
-      searchLbryClaims({ claim_type: 'stream', order_by: ['trending_global'], page_size: 10 }),
-      searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 12 })
+    const [supported, recent] = await Promise.all([
+      searchLbryClaims({ claim_type: 'stream', order_by: ['effective_amount'], page_size: 10 }),
+      searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 30 })
     ])
 
-    let all = [...(trending.items || []), ...(recent.items || [])]
+    let all = [...(supported.items || []), ...(recent.items || [])]
     const seen = new Set<string>()
     all = all.filter((c: any) => {
       const u = c.canonical_url || `lbry://${c.name}`
       if (u === excludeUri || seen.has(u)) return false
       seen.add(u)
       return true
-    }).slice(0, 15)
+    })
+
+    // Re-sort the mixed pool by reliable timestamp (getClaimTimestamp).
+    // This drops stale items that had bogus high value.release_time (which made the server
+    // rank them in the release_time results) and ensures recent content bubbles to the top of More to Watch.
+    all = all
+      .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
+      // Looser cutoff for suggestions (More to Watch can include older good content)
+      .filter((x: any) => x.ts > 1609459200)
+      .sort((x: any, y: any) => y.ts - x.ts)
+      .slice(0, 15)
+      .map((x: any) => x.c)
 
     grid.innerHTML = ''
     all.forEach((claim: any) => {
@@ -199,6 +237,17 @@ async function loadMoreToWatch(excludeUri: string) {
       const title = value.title || claim.name || 'Untitled'
       const channel = claim.signing_channel?.name || '@unknown'
       const u = claim.canonical_url || `lbry://${claim.name}`
+      const timestamp = getClaimTimestamp(claim);
+      const uploaded = formatUploadTime(timestamp);
+
+      // Paywall
+      const fee = value.fee || value.stream?.fee || null;
+      const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0);
+      const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : '';
+
+      const metaLine = isLocked 
+        ? `🔒 ${feeStr}` 
+        : `${channel}${uploaded ? ` • ${uploaded}` : ''}`;
 
       const card = document.createElement('div')
       card.className = 'small-card'
@@ -206,7 +255,7 @@ async function loadMoreToWatch(excludeUri: string) {
         <img src="${thumb}" alt="">
         <div class="meta">
           <div class="title">${title}</div>
-          <div class="channel">${channel}</div>
+          <div class="channel">${metaLine}</div>
         </div>
       `
       card.onclick = () => { showView('player'); loadVideo(u) }
@@ -223,8 +272,17 @@ async function loadFeed() {
   grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading feed…</div>`
 
   try {
-    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['trending_global'], page_size: 20 })
-    feedItems = res.items || []
+    // Feed = claims with the highest LBC support (effective_amount = base claim + deposited supports)
+    // We fetch with effective_amount and explicitly sort client-side descending to guarantee
+    // the highest-supported streams appear first (order_by direction can vary by backend).
+    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['effective_amount'], page_size: 25 })
+    let items = res.items || []
+    items.sort((a: any, b: any) => {
+      const ba = (b.meta?.effective_amount || 0)
+      const aa = (a.meta?.effective_amount || 0)
+      return ba - aa
+    })
+    feedItems = items.slice(0, 20)
     renderClaimGrid(feedItems, grid)
   } catch {
     grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load.</div>`
@@ -235,32 +293,60 @@ async function loadLatest() {
   const grid = document.getElementById('latest-grid')!
   grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading latest…</div>`
 
+  latestItems = []  // clear any previous to avoid stale data from prior sessions/configs
+
   try {
-    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 20 })
-    const newItems = res.items || []
+    // Use order_by release_time to get a recency-biased candidate set (this is the variant
+    // the public proxy responds to with recent items on top). We then heavily post-process
+    // with getClaimTimestamp (meta.creation_timestamp preferred + sanitization) to remove
+    // any claims that have bogus value.release_time (the cause of old "It's time" etc. videos
+    // appearing in Latest). Works the same whether on Companion daemon or public proxy.
+    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 50 })
+    let candidates = (res.items || [])
 
-    // Merge potential new entries while keeping top 20 most recent by release_time
-    let combined = [...latestItems, ...newItems]
-    const seen = new Set<string>()
-    combined = combined.filter((item: any) => {
-      const id = item.claim_id || item.id || item.name
-      if (seen.has(id)) return false
-      seen.add(id)
-      return true
-    })
+    // Post-process with reliable timestamp (prefers meta.creation_timestamp, sanitizes bad release_time).
+    // This is the main fix for intermittent stale 2023-era videos (e.g. "It's time" with bogus value.release_time)
+    // appearing in Latest. We use a strict recent window for the dedicated Latest tab.
+    const nowSec = Math.floor(Date.now() / 1000)
+    const minLatestTs = nowSec - (86400 * 400) // ~13 months; keeps only truly recent for "Latest"
+    candidates = candidates
+      .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
+      .filter((x: any) => x.ts > minLatestTs)
+      .sort((x: any, y: any) => y.ts - x.ts)
+      .slice(0, 20)
+      .map((x: any) => x.c)
 
-    // Sort by release_time descending
-    combined.sort((a: any, b: any) => {
-      const ta = (a.value?.release_time) || a.release_time || 0
-      const tb = (b.value?.release_time) || b.release_time || 0
-      return tb - ta
-    })
-
-    latestItems = combined.slice(0, 20)
+    latestItems = candidates
     renderClaimGrid(latestItems, grid)
   } catch {
     grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load.</div>`
   }
+}
+
+function formatUploadTime(timestamp: number): string {
+  if (!timestamp) return '';
+  const now = Math.floor(Date.now() / 1000);
+  const diff = now - timestamp;
+
+  const minute = 60;
+  const hour = minute * 60;
+  const day = hour * 24;
+  const week = day * 7;
+
+  if (diff < minute) return 'just now';
+  if (diff < hour) return `${Math.floor(diff / minute)} min ago`;
+  if (diff < day) return `${Math.floor(diff / hour)} hour${Math.floor(diff / hour) > 1 ? 's' : ''} ago`;
+  if (diff < week * 4) {
+    const weeks = Math.floor(diff / week);
+    return `${weeks} week${weeks > 1 ? 's' : ''} ago`;
+  }
+
+  const date = new Date(timestamp * 1000);
+  const dayNum = date.getDate();
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const month = monthNames[date.getMonth()];
+  const year = date.getFullYear();
+  return `${dayNum} ${month} ${year}`;
 }
 
 function renderClaimGrid(items: any[], container: HTMLElement) {
@@ -271,6 +357,26 @@ function renderClaimGrid(items: any[], container: HTMLElement) {
     const title = value.title || claim.name || 'Untitled'
     const channel = claim.signing_channel?.name || '@unknown'
     const u = claim.canonical_url || `lbry://${claim.name}`
+    const timestamp = getClaimTimestamp(claim);
+    const uploaded = formatUploadTime(timestamp);
+
+    // Paywall
+    const fee = value.fee || value.stream?.fee || null;
+    const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0);
+    const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : '';
+
+    const metaLine = isLocked 
+      ? `🔒 ${feeStr}` 
+      : `${channel}${uploaded ? ` • ${uploaded}` : ''}`;
+
+    // Total staked for this claim (for Feed etc.)
+    const cAmt = parseFloat(claim.amount || 0);
+    const sAmt = parseFloat(claim.meta?.support_amount || 0);
+    let staked = cAmt + sAmt;
+    if (!staked && claim.meta?.effective_amount) staked = parseFloat(claim.meta.effective_amount);
+    const stakedLine = staked > 0.01 
+      ? `<div class="text-[10px] text-emerald-400 mt-0.5">${staked.toLocaleString(undefined, {maximumFractionDigits: 0})} LBC staked</div>` 
+      : '';
 
     const card = document.createElement('div')
     card.className = 'claim-card'
@@ -278,7 +384,8 @@ function renderClaimGrid(items: any[], container: HTMLElement) {
       <img src="${thumb}">
       <div class="p-3">
         <div class="text-sm font-semibold leading-tight line-clamp-2">${title}</div>
-        <div class="text-xs text-[#64748b] mt-1">${channel}</div>
+        <div class="text-xs text-[#64748b] mt-1">${metaLine}</div>
+        ${stakedLine}
       </div>
     `
     card.onclick = () => { showView('player'); loadVideo(u) }
@@ -366,6 +473,32 @@ async function loadLibrary() {
   await loadVault()
   await loadHistory()
   renderLibrary()
+}
+
+async function resetViewData() {
+  // Clear in-memory caches for this player instance (eliminates any prior merge/stale lists)
+  feedItems = [];
+  latestItems = [];
+  vault = [];
+  history = [];
+
+  // Clear persistent storage for vault and history (shared with popup)
+  await chrome.storage.local.remove(['revivel_vault', 'revivel_history']);
+
+  // Always force fresh fetches for dynamic lists so Latest/Feed grids are updated
+  // even if you are currently on Player or Settings view. This ensures reset actually
+  // purges stale latest from earlier extension builds/configs.
+  await loadFeed();
+  await loadLatest();
+
+  if (currentView === 'library') {
+    await loadLibrary();
+  } else if (currentView === 'wallet') {
+    renderWallet();
+  }
+
+  // Notify popup side indirectly via storage clear (next open will be fresh)
+  alert('View data and caches have been reset (fresh Latest/Feed fetched).\n\nIf you still see old items, fully reload the extension at chrome://extensions then reload this page.');
 }
 
 function renderWallet() {
@@ -573,6 +706,15 @@ function renderSettings() {
       deleteConfirmed = false
     } catch(e: any) { alert('Delete failed: ' + e.message) }
   }
+
+  // Reset view data / caches button
+  const resetBtn = document.getElementById('reset-data-btn')!
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!confirm('Reset all view data and caches? This will clear feeds, vault, and history. You may need to reload the tab.')) return;
+      await resetViewData();
+    }
+  }
 }
 
 async function updateSettingsStatus(box: HTMLElement) {
@@ -608,6 +750,10 @@ async function init() {
   await updateStatus()
   await loadVault()
   await loadHistory()
+
+  // Explicit clear on every full page load (in case of any module-level retention or prior bundle)
+  feedItems = []
+  latestItems = []
 
   await loadVideo(currentUri)
   loadFeed(); loadLatest()

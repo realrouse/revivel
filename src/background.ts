@@ -115,6 +115,7 @@ async function rpcCall(method: string, params: any = {}) {
     const res = await fetch(endpoint, {
       method: 'POST',
       mode: 'cors',
+      cache: 'no-store',  // ensure no HTTP cache serves stale claim_search results etc.
       headers: {
         'Content-Type': 'application/json',
         'Origin': 'http://localhost'

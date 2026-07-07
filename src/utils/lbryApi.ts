@@ -191,3 +191,27 @@ export function extractClaim(resolveResult: LbryResolveResult, uri: string): Lbr
   if (!entry || (entry as any).error) return null
   return entry as LbryClaim
 }
+
+/**
+ * Returns the most reliable timestamp for a claim (for recency/"latest" ordering and display).
+ * Prefers on-chain meta.creation_timestamp (set by the network at publish/activation time).
+ * Falls back to value.release_time but SANITIZES common bad data from publishers:
+ *  - Millisecond timestamps (Date.now() mistakes)
+ *  - Garbage huge numbers
+ *  - Distant future sentinels (e.g. year 9999)
+ * This fixes stale 2023-era videos (and similar) polluting "Latest" and "More to Watch"
+ * when order_by release_time on daemon or public proxy surfaces them due to bad value.release_time.
+ */
+export function getClaimTimestamp(claim: any): number {
+  const metaTs = Number(claim?.meta?.creation_timestamp || 0)
+  let valTs = Number(claim?.value?.release_time || claim?.release_time || 0)
+  const now = Math.floor(Date.now() / 1000)
+  // Heuristics for bogus release_time:
+  // > 1e11 likely ms since epoch (e.g. 1.7e12)
+  // > now + ~10 years also suspicious for a "release time"
+  // very small or year-9999 sentinels (~2.5e11) also bad for ordering
+  if (!valTs || valTs > 1e11 || valTs > (now + 86400 * 365 * 10) || valTs > 2e11) {
+    valTs = 0
+  }
+  return metaTs > 0 ? metaTs : (valTs > 0 ? valTs : 0)
+}
