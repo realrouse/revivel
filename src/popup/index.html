@@ -1,0 +1,382 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReviveL</title>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap');
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #111114;
+      --card: #18181b;
+      --accent: #14b8a6;
+    }
+
+    html, body {
+      width: 500px;
+      height: 640px;
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+      background: #0a0a0f;
+      color: #e2e8f0;
+      font-family: 'Inter', system-ui, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .logo-font {
+      font-family: 'Space Grotesk', 'Inter', sans-serif;
+      font-weight: 600;
+      letter-spacing: -0.025em;
+    }
+
+    /* Core layout & colors matching player.html */
+    .bg-slate-950 { background: #0a0a0f; }
+    .bg-slate-900 { background: #111114; }
+    .bg-slate-800 { background: #18181b; }
+    .border-slate-800 { border-color: #27272a; }
+    .border-slate-700 { border-color: #334155; }
+    .text-slate-200 { color: #e2e8f0; }
+    .text-slate-400 { color: #64748b; }
+
+    /* Flex & spacing (from player) */
+    .flex { display: flex; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .gap-x-1 { gap: 0.25rem; }
+    .gap-x-2 { gap: 0.5rem; }
+    .px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+    .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .py-1 { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+
+    /* Header */
+    .border-b { border-bottom: 1px solid #27272a; }
+
+    /* Search - match player style */
+    .search-input {
+      width: 100%;
+      background: #061c1a;
+      border: 1px solid #1a7b50;
+      color: white;
+      font-size: 13px;
+      padding: 8px 12px 8px 34px;
+      border-radius: 9999px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .search-input:focus {
+      border-color: #14b8a6;
+    }
+    .search-input::placeholder {
+      color: #64748b;
+    }
+
+    /* Tabs - match player .nav-tab pill style */
+    .tab-btn {
+      flex: 1;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 6px 10px;
+      border-radius: 9999px;
+      background: transparent;
+      color: #94a3b8;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover:not(.tab-active) {
+      color: #e2e8f0;
+      background: #1e2937;
+    }
+    .tab-active {
+      background: #14b8a6;
+      color: white;
+      font-weight: 600;
+    }
+
+    /* Claim cards - exact match to player.html for consistency */
+    .claim-card {
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 14px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .claim-card:hover {
+      border-color: #14b8a6;
+      transform: translateY(-1px);
+      box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+    }
+    .claim-card img {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #0a0a0f;
+    }
+
+    /* Legacy compact for vault etc, updated colors */
+    .compact-list-item {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 10px;
+      padding: 6px;
+      cursor: pointer;
+      transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .compact-list-item:hover {
+      background: #18181b;
+      border-color: #14b8a6;
+      transform: translateY(-1px);
+    }
+
+    /* Buttons - match player.html */
+    .play-btn {
+      background: #14b8a6;
+      color: white;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .play-btn:hover {
+      background: #0f766e;
+    }
+
+    .action-btn {
+      background: #1e2937;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: 9999px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.2s;
+    }
+    .action-btn:hover {
+      background: #334155;
+      border-color: #475569;
+    }
+    .action-btn.teal {
+      background: #14b8a6;
+      border-color: #14b8a6;
+      color: white;
+    }
+
+    .primary-btn {
+      background: #14b8a6;
+      color: white;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 12px;
+      border-radius: 9999px;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .primary-btn:hover {
+      background: #0f766e;
+    }
+
+    /* Scroll */
+    .content-scroll {
+      scrollbar-width: thin;
+      scrollbar-color: #475569 #0a0a0f;
+    }
+
+    /* Layout so the bottom buttons are fixed/sticky at the very bottom of the popup
+       *viewport* (always visible, no need to scroll down the popup to reach them).
+       The content area scrolls above the fixed bar. */
+    #content-area {
+      flex: 1;
+      overflow-y: auto;
+      min-height: 0;
+      /* Reserve space at bottom so last content isn't hidden behind the fixed bar */
+      padding-bottom: 48px;
+    }
+
+    .bottom-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 20;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.5);
+    }
+
+    /* Buttons in the fixed bar: ~20% bigger */
+    .bottom-bar .action-btn {
+      font-size: 13px;
+      padding: 7px 14px;
+      gap: 6px;
+    }
+
+    /* Content grid - match player */
+    .content-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .grid { display: grid; }
+    .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .gap-1 { gap: 4px; }
+    .gap-1\.5 { gap: 6px; }
+    .aspect-video { aspect-ratio: 16 / 9; }
+
+    /* Misc utilities + player-like */
+    .rounded { border-radius: 4px; }
+    .rounded-xl { border-radius: 8px; }
+    .rounded-2xl { border-radius: 12px; }
+    .text-xs { font-size: 11px; }
+    .text-sm { font-size: 12px; }
+    .font-semibold { font-weight: 600; }
+    .font-medium { font-weight: 500; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .flex-1 { flex: 1; }
+    .min-w-0 { min-width: 0; }
+    .w-6 { width: 24px; }
+    .h-6 { height: 24px; }
+    .h-8 { height: 32px; }
+    .h-20 { height: 80px; }
+    .w-9 { width: 36px; }
+    .w-11 { width: 44px; }
+    .w-full { width: 100%; }
+    .relative { position: relative; }
+    .absolute { position: absolute; }
+    .left-2\.5 { left: 10px; }
+    .top-2 { top: 8px; }
+
+    /* Player-matching panels */
+    .section-panel {
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    /* Status + accent colors for dynamic classNames */
+    .bg-emerald-500 { background-color: #10b981; }
+    .bg-amber-500 { background-color: #fbbf24; }
+    .bg-red-500 { background-color: #ef4444; }
+    .bg-yellow-500 { background-color: #eab308; }
+    .text-emerald-400 { color: #34d399; }
+    .text-yellow-400 { color: #fbbf24; }
+    .text-red-400 { color: #f87171; }
+    .text-amber-400 { color: #fbbf24; }
+
+    /* Missing utilities for header/status pill (direct hash + small sizes) */
+    .bg-\[\#111114\] { background-color: #111114; }
+    .bg-\[\#1e2937\] { background-color: #1e2937; }
+    .bg-\[\#0a0a0f\] { background-color: #0a0a0f; }
+    .border-\[\#27272a\] { border-color: #27272a; }
+    .border-\[\#334155\] { border-color: #334155; }
+    .text-\[\#e2e8f0\] { color: #e2e8f0; }
+    .text-\[\#64748b\] { color: #64748b; }
+    .text-\[\#94a3b8\] { color: #94a3b8; }
+    .text-\[9px\] { font-size: 9px; }
+    .text-\[15px\] { font-size: 15px; }
+    .w-2 { width: 8px; }
+    .h-2 { height: 8px; }
+    .w-2\.5 { width: 10px; }
+    .h-2\.5 { height: 10px; }
+    .w-4 { width: 16px; }
+    .h-4 { height: 16px; }
+    .w-7 { width: 28px; }
+    .h-7 { height: 28px; }
+    .w-8 { width: 32px; }
+    .h-8 { height: 32px; }
+    .px-1\.5 { padding-left: 6px; padding-right: 6px; }
+    .py-0\.5 { padding-top: 2px; padding-bottom: 2px; }
+    .gap-x-1\.5 { column-gap: 6px; }
+    .gap-x-1 { column-gap: 4px; }
+    .flex-shrink-0 { flex-shrink: 0; }
+    .rounded-lg { border-radius: 8px; }
+    .transition-all { transition: all 0.15s ease; }
+    .tracking-wide { letter-spacing: 0.025em; }
+    .tracking-\[-0\.5px\] { letter-spacing: -0.5px; }
+    .bg-gray-500 { background-color: #6b7280; }
+  </style>
+</head>
+<body class="bg-[#0a0a0f] text-[#e2e8f0]">
+  <!-- Header - match player style -->
+  <div class="bg-[#111114] border-b border-[#27272a] px-3 py-2 flex items-center justify-between" style="min-height:44px">
+    <div class="flex items-center gap-x-2">
+      <img src="icons/icon48.png" alt="ReviveL" class="w-6 h-6 rounded-xl">
+      <span class="logo-font text-[15px] font-semibold tracking-[-0.5px]">ReviveL</span>
+    </div>
+    
+    <div class="flex items-center gap-x-1.5">
+      <div id="status-pill" 
+           class="flex items-center bg-[#1e2937] text-[9px] rounded-full px-1.5 py-0.5 gap-x-1 border border-[#334155]"
+           title="Connection status">
+        <div id="status-dot" class="w-2 h-2 rounded-full bg-gray-500 transition-all flex-shrink-0"></div>
+        <span id="status-label" class="font-medium tracking-wide text-[#94a3b8]">Public</span>
+      </div>
+      <button id="settings-btn" class="w-8 h-8 flex items-center justify-center bg-[#1e2937] border border-[#334155] text-[#64748b] hover:text-[#e2e8f0] hover:bg-[#334155] hover:border-[#475569] rounded-lg transition-all" title="Settings" style="font-size:19px; width:34px; height:34px;">⚙︎</button>
+    </div>
+  </div>
+
+  <!-- Search - match player -->
+  <div class="px-3 pt-2 pb-1 bg-[#111114]">
+    <div class="relative">
+      <input id="search-input" 
+             type="text" 
+             placeholder="Search LBRY or paste lbry://..." 
+             class="search-input w-full">
+      <span class="absolute left-3 top-[7px] text-[#64748b]" style="font-size:12px">🔎</span>
+    </div>
+  </div>
+
+  <!-- Tabs - pill style like player nav -->
+  <div class="px-3 flex gap-x-1 bg-[#111114] pb-2 pt-0.5">
+    <button data-tab="feed" class="tab-btn flex-1 font-semibold tab-active">Feed</button>
+    <button data-tab="new" class="tab-btn flex-1">Latest</button>
+    <button data-tab="vault" class="tab-btn flex-1">Vault</button>
+    <button data-tab="wallet" class="tab-btn flex-1">Wallet</button>
+  </div>
+
+  <!-- Content Area (scrolls, flex takes remaining space) -->
+  <div id="content-area" class="px-3 py-2 bg-[#0a0a0f] content-scroll">
+    <!-- Populated by JS -->
+  </div>
+
+  <!-- Bottom Bar - actions like player (always visible) -->
+  <div class="bottom-bar px-3 py-2 flex gap-x-2">
+    <button id="upload-btn" 
+            class="flex-1 flex items-center justify-center gap-x-1 action-btn">
+      <span>↑</span>
+      <span>Upload</span>
+    </button>
+    
+    <button id="open-player-btn"
+            class="flex-1 flex items-center justify-center gap-x-1 action-btn teal">
+      <span>▶︎</span>
+      <span>Full Player</span>
+    </button>
+  </div>
+
+  <script src="./popup.ts" type="module"></script>
+</body>
+</html>

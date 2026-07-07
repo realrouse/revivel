@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>ReviveL Overlay</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+      color: #e2e8f0;
+    }
+    #wrap {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+    .standalone-header {
+      display: none;
+      background: #1e2937;
+      padding: 4px 8px;
+      font-size: 11px;
+      flex-shrink: 0;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid #334155;
+    }
+    .standalone-header.show {
+      display: flex;
+    }
+    .standalone-header button {
+      background: #334155;
+      border: none;
+      color: #94a3b8;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 4px;
+    }
+    .standalone-header button.primary {
+      background: #14b8a6;
+      color: white;
+    }
+    video {
+      flex: 1;
+      width: 100%;
+      background: #000;
+      display: block;
+      object-fit: contain;
+    }
+    .foot {
+      padding: 3px 8px;
+      font-size: 9px;
+      color: #64748b;
+      background: #111;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: monospace;
+      flex-shrink: 0;
+    }
+    .no-stream {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #64748b;
+      font-size: 12px;
+      text-align: center;
+      padding: 12px;
+      background: #111;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="standalone-header" class="standalone-header">
+      <span id="standalone-title" style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:60%;"></span>
+      <div>
+        <button id="sa-reattach">Re-attach to page</button>
+        <button id="sa-fullplayer" class="primary">Full Player</button>
+        <button id="sa-full">⛶</button>
+        <button id="sa-close">×</button>
+      </div>
+    </div>
+    <video id="v" controls autoplay playsinline preload="metadata"></video>
+    <div id="foot" class="foot"></div>
+  </div>
+  <script type="module" src="./overlay/overlay.ts"></script>
+</body>
+</html>

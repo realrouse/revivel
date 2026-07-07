@@ -1,0 +1,711 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ReviveL • Full Player</title>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+    
+    :root {
+      --bg: #0a0a0f;
+      --surface: #111114;
+      --card: #18181b;
+      --accent: #14b8a6;
+    }
+    
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      background: #0a0a0f;
+      color: #e2e8f0;
+      margin: 0;
+      padding: 0;
+      min-height: 100vh;
+    }
+    
+    .logo-font { 
+      font-family: 'Space Grotesk', sans-serif; 
+      font-weight: 600; 
+      letter-spacing: -0.025em;
+    }
+
+    .nav-tab {
+      padding: 8px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-radius: 9999px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .nav-tab:hover {
+      color: #e2e8f0;
+      background: #1e2937;
+    }
+    .nav-tab.active {
+      background: #14b8a6;
+      color: white;
+      font-weight: 600;
+    }
+
+    .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      background: #1e2937;
+      border: 1px solid #334155;
+      padding: 2px 6px;
+      border-radius: 9999px;
+      font-size: 9px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: fixed;
+      top: 10px;
+      right: 12px;
+      z-index: 200;
+    }
+    .status-pill:hover {
+      border-color: #475569;
+    }
+
+    #global-search {
+      width: 400px;
+      height: 50px;
+      border-radius: 25px;
+      padding: 10px;
+      padding-left: 25px;
+      padding-right: 25px;
+      margin: 10px;
+      font-size: 14pt;
+      background-color: #061c1a;
+      color: white;
+      border: 1px solid #1a7b50;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #global-search:focus {
+      border-color: #14b8a6;
+    }
+    #global-search::placeholder {
+      color: #64748b;
+    }
+
+    .video-container {
+      width: 60%;
+      max-width: 860px;
+      margin-left: auto;
+      margin-right: auto;
+      margin-bottom: 25px;
+      background: #000;
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.6);
+      border: 1px solid #27272a;
+    }
+
+    .video-container video {
+      width: 100%;
+      display: block;
+      background: #000;
+    }
+
+    #meta {
+      margin-bottom: 15px;
+    }
+
+    #video-desc {
+      margin-top: 15px;
+      margin-bottom: 15px;
+    }
+
+    .section-title {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #64748b;
+      margin-bottom: 10px;
+    }
+
+    .small-card {
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 10px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .small-card:hover {
+      border-color: #14b8a6;
+      transform: translateY(-1px);
+    }
+    .small-card img {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      background: #1e2937;
+    }
+    .small-card .meta {
+      padding: 8px;
+    }
+    .small-card .title {
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.3;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .small-card .channel {
+      font-size: 10px;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .grid-more {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+      gap: 16px;
+    }
+
+    .content-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 20px;
+    }
+
+    .claim-card {
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 14px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .claim-card:hover {
+      border-color: #14b8a6;
+      transform: translateY(-1px);
+      box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+    }
+    .claim-card img {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #0a0a0f;
+    }
+
+    .action-btn {
+      background: #1e2937;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      padding: 9px 16px;
+      border-radius: 9999px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      transition: all 0.2s;
+      white-space: nowrap;
+    }
+    .action-btn:hover {
+      background: #334155;
+      border-color: #475569;
+    }
+    .action-btn.teal {
+      background: #14b8a6;
+      border-color: #14b8a6;
+      color: white;
+    }
+
+    .menu-bar {
+      position: relative;
+      background: #0a0a0f;
+      border-bottom: 1px solid #1e2937;
+      padding-top: 10px;
+      padding-bottom: 10px;
+      min-height: 70px;
+    }
+
+    .main-content {
+      padding-top: 25px;
+      padding-bottom: 60px;
+      min-height: 100vh;
+    }
+
+    .premium-section {
+      margin-bottom: 48px;
+    }
+
+    .nav-tab {
+      padding: 9px 18px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-radius: 9999px;
+      cursor: pointer;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      letter-spacing: -0.1px;
+    }
+    .nav-tab:hover {
+      color: #e2e8f0;
+      background: #1e2937;
+    }
+    .nav-tab.active {
+      background: #14b8a6;
+      color: white;
+      font-weight: 600;
+    }
+
+    .view {
+      display: none;
+    }
+    .view.active {
+      display: block;
+    }
+
+    #view-settings {
+      margin-top: 160px;
+      margin-bottom: 100px;
+      padding: 0 20px;
+    }
+
+    .status-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+    }
+
+    /* =========================================
+       Utility classes (layout, spacing, type)
+       These emulate needed Tailwind utilities
+       since the CDN was removed for CSP.
+       This fixes unformatted text, missing
+       paddings, margins, flex layouts etc.
+    ========================================= */
+
+    /* Layout */
+    .flex { display: flex; }
+    .flex-wrap { flex-wrap: wrap; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .justify-center { justify-content: center; }
+    .flex-1 { flex: 1 1 0%; }
+
+    .grid { display: grid; }
+    .grid-cols-1 { grid-template-columns: repeat(1, minmax(0, 1fr)); }
+    @media (min-width: 1024px) {
+      .lg\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    .gap-2 { gap: 0.5rem; }
+    .gap-3 { gap: 0.75rem; }
+    .gap-8 { gap: 2rem; }
+    .gap-x-1 { column-gap: 0.25rem; }
+    .gap-x-3 { column-gap: 0.75rem; }
+    .gap-x-4 { column-gap: 1rem; }
+    .gap-x-7 { column-gap: 1.75rem; }
+    .space-y-3 > * + * { margin-top: 0.75rem; }
+    .space-y-6 > * + * { margin-top: 1.5rem; }
+
+    .relative { position: relative; }
+    .absolute { position: absolute; }
+    .inset-0 { top: 0; right: 0; bottom: 0; left: 0; }
+
+    .hidden { display: none !important; }
+
+    /* Sizing */
+    .w-full { width: 100%; }
+    .w-9 { width: 2.25rem; }
+    .h-9 { height: 2.25rem; }
+    .max-w-\[1320px\] { max-width: 1320px; }
+    .max-w-\[860px\] { max-width: 860px; }
+    .max-w-\[620px\] { max-width: 620px; }
+    .max-w-2xl { max-width: 42rem; }
+    .mx-auto { margin-left: auto; margin-right: auto; }
+
+    /* Spacing */
+    .p-2 { padding: 0.5rem; }
+    .p-3 { padding: 0.75rem; }
+    .p-4 { padding: 1rem; }
+    .p-6 { padding: 1.5rem; }
+    .px-1 { padding-left: 0.25rem; padding-right: 0.25rem; }
+    .px-2 { padding-left: 0.5rem; padding-right: 0.5rem; }
+    .px-4 { padding-left: 1rem; padding-right: 1rem; }
+    .px-5 { padding-left: 1.25rem; padding-right: 1.25rem; }
+    .px-8 { padding-left: 2rem; padding-right: 2rem; }
+    .px-9 { padding-left: 2.25rem; padding-right: 2.25rem; }
+    .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+    .py-3 { padding-top: 0.75rem; padding-bottom: 0.75rem; }
+    .mb-1 { margin-bottom: 0.25rem; }
+    .mb-2 { margin-bottom: 0.5rem; }
+    .mb-3 { margin-bottom: 0.75rem; }
+    .mb-4 { margin-bottom: 1rem; }
+    .mb-5 { margin-bottom: 1.25rem; }
+    .mb-6 { margin-bottom: 1.5rem; }
+    .mb-8 { margin-bottom: 2rem; }
+    .mb-9 { margin-bottom: 2.25rem; }
+    .mb-10 { margin-bottom: 2.5rem; }
+    .mt-1 { margin-top: 0.25rem; }
+    .mt-2 { margin-top: 0.5rem; }
+    .mt-3 { margin-top: 0.75rem; }
+    .mt-4 { margin-top: 1rem; }
+    .mt-6 { margin-top: 1.5rem; }
+    .mt-12 { margin-top: 3rem; }
+    .mt-0\.5 { margin-top: 0.125rem; }
+
+    /* Typography */
+    .text-\[28px\] { font-size: 28px; }
+    .text-\[26px\] { font-size: 26px; }
+    .text-\[22px\] { font-size: 22px; }
+    .text-\[15px\] { font-size: 15px; }
+    .text-\[10px\] { font-size: 10px; }
+    .text-3xl { font-size: 1.875rem; line-height: 2.25rem; }
+    .text-2xl { font-size: 1.5rem; line-height: 2rem; }
+    .text-xl { font-size: 1.25rem; }
+    .text-base { font-size: 1rem; line-height: 1.5rem; }
+    .text-sm { font-size: 0.875rem; line-height: 1.25rem; }
+    .text-xs { font-size: 0.75rem; line-height: 1rem; }
+    .font-semibold { font-weight: 600; }
+    .font-medium { font-weight: 500; }
+    .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .tracking-\[-0\.4px\] { letter-spacing: -0.4px; }
+    .tracking-\[-0\.3px\] { letter-spacing: -0.3px; }
+    .tracking-\[-0\.5px\] { letter-spacing: -0.5px; }
+    .tracking-\[-1\.2px\] { letter-spacing: -1.2px; }
+    .tracking-tight { letter-spacing: -0.025em; }
+    .tracking-wide { letter-spacing: 0.025em; }
+    .tracking-\[1px\] { letter-spacing: 1px; }
+    .tracking-\[0\.5px\] { letter-spacing: 0.5px; }
+    .leading-relaxed { line-height: 1.625; }
+    .leading-tight { line-height: 1.25; }
+    .uppercase { text-transform: uppercase; }
+    .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    .text-center { text-align: center; }
+
+    /* More to Watch header - explicit so it always looks like a proper header */
+    .more-watch-header {
+      font-size: 22px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+      color: #e2e8f0;
+      margin-bottom: 2px;
+    }
+
+    /* Colors (text) */
+    .text-\[\#e2e8f0\] { color: #e2e8f0; }
+    .text-\[\#cbd5e1\] { color: #cbd5e1; }
+    .text-\[\#94a3b8\] { color: #94a3b8; }
+    .text-\[\#64748b\] { color: #64748b; }
+    .text-\[\#14b8a6\] { color: #14b8a6; }
+    .text-emerald-400 { color: #34d399; }
+    .text-emerald-300 { color: #6ee7b7; }
+    .text-red-400 { color: #f87171; }
+    .text-red-300 { color: #fca5a5; }
+
+    /* Backgrounds */
+    .bg-\[\#0a0a0f\] { background-color: #0a0a0f; }
+    .bg-\[\#111114\] { background-color: #111114; }
+    .bg-\[\#1e2937\] { background-color: #1e2937; }
+    .bg-\[\#061c1a\] { background-color: #061c1a; }
+    .bg-black { background-color: #000; }
+    .bg-black\/75 { background-color: rgba(0, 0, 0, 0.75); }
+    .bg-\[\#0a0a0f\] { background-color: #0a0a0f; } /* dup ok */
+
+    /* Status dots + special button fills (used via className or classes) */
+    .bg-emerald-400 { background-color: #10b981; }
+    .bg-amber-400 { background-color: #fbbf24; }
+    .bg-gray-500 { background-color: #6b7280; }
+    .bg-emerald-900 { background-color: #064e3b; }
+    .bg-red-900 { background-color: #7f1d1d; }
+    .bg-\[\#14b8a6\] { background-color: #14b8a6; color: #fff; }
+    .bg-\[\#334155\] { background-color: #334155; }
+
+    /* Borders + radius */
+    .border { border-width: 1px; border-style: solid; }
+    .border-\[\#27272a\] { border-color: #27272a; }
+    .border-\[\#334155\] { border-color: #334155; }
+    .border-\[\#475569\] { border-color: #475569; }
+    .rounded { border-radius: 0.25rem; }
+    .rounded-xl { border-radius: 0.75rem; }
+    .rounded-2xl { border-radius: 1rem; }
+    .rounded-3xl { border-radius: 1.5rem; }
+    .rounded-full { border-radius: 9999px; }
+
+    /* Misc */
+    .col-span-full { grid-column: 1 / -1; }
+    .inline-block { display: inline-block; }
+    .transition { transition: all 0.2s ease; }
+    .outline-none { outline: none; }
+    .overflow-auto { overflow: auto; }
+    .break-all { word-break: break-all; }
+    .max-h-48 { max-height: 12rem; }
+  </style>
+</head>
+<body class="bg-[#0a0a0f] text-[#e2e8f0]">
+  <!-- Top Menu Bar / Header -->
+  <div class="menu-bar px-8 flex items-center gap-x-4">
+    <div class="flex items-center gap-x-7">
+      <!-- Logo -->
+      <div class="flex items-center gap-x-3">
+        <img src="icons/icon48.png" class="w-9 h-9 rounded-2xl" alt="ReviveL">
+        <span class="logo-font text-[26px] tracking-[-1.2px]">ReviveL</span>
+      </div>
+
+      <!-- Main Navigation - premium pill style -->
+      <div class="flex items-center gap-x-1">
+        <button class="nav-tab active" data-view="player">Player</button>
+        <button class="nav-tab" data-view="feed">Feed</button>
+        <button class="nav-tab" data-view="latest">Latest</button>
+        <button class="nav-tab" data-view="search">Search</button>
+        <button class="nav-tab" data-view="library">Library</button>
+        <button class="nav-tab" data-view="wallet">Wallet</button>
+        <button class="nav-tab" data-view="settings">Settings</button>
+      </div>
+    </div>
+
+    <!-- Global Search (to the right of settings button) -->
+    <input id="global-search" type="text" 
+           placeholder="Search LBRY or paste lbry://...">
+  </div>
+
+  <!-- Status (small, fixed top right) -->
+  <div id="status-pill" class="status-pill" title="Daemon status">
+    <div id="status-dot" class="status-dot bg-gray-500"></div>
+    <span id="status-text" class="font-medium text-xs tracking-wide">Checking...</span>
+  </div>
+
+  <div class="main-content px-9 max-w-[1320px] mx-auto">
+
+    <!-- ============ PLAYER VIEW ============ -->
+    <div id="view-player" class="view active">
+      <!-- Centered Video (60% width) - premium frame -->
+      <div class="mb-9">
+        <div class="video-container mx-auto" style="box-shadow: 0 30px 70px -15px rgb(0 0 0 / 0.65);">
+          <div class="relative">
+            <video id="video-player" controls playsinline class="w-full bg-black" style="max-height: 64vh; min-height: 360px;"></video>
+            <div id="video-overlay" class="absolute inset-0 hidden items-center justify-center bg-black/75 text-sm text-[#64748b]"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Video Meta & Actions -->
+      <div class="max-w-[860px] mx-auto">
+        <div id="meta" class="mb-5"></div>
+
+        <div class="flex flex-wrap gap-3 mb-8">
+          <button id="copy-btn" class="action-btn"><span>⎘</span> <span>Copy URI</span></button>
+          <button id="copy-odysee-btn" class="action-btn"><span>⎘</span> <span>Odysee Link</span></button>
+          <button id="bookmark-btn" class="action-btn"><span>🔖</span> <span>Save to Library</span></button>
+          <button id="support-btn" class="action-btn"><span>♥</span> <span>Support</span></button>
+          <button id="popout-btn" class="action-btn">Detach</button>
+          <button id="download-btn" class="action-btn">⬇ Download</button>
+        </div>
+
+        <div id="video-desc" class="text-[15px] leading-relaxed text-[#cbd5e1] max-w-2xl"></div>
+      </div>
+
+      <!-- More to Watch -->
+      <div class="mt-12 max-w-[1320px] mx-auto">
+        <div class="flex items-center justify-between mb-4 px-1">
+          <div class="more-watch-header">More to Watch</div>
+          <button id="refresh-more" class="text-xs text-[#14b8a6] hover:text-[#0f766e] transition">Refresh</button>
+        </div>
+        <div id="more-grid" class="grid-more"></div>
+      </div>
+    </div>
+
+    <!-- ============ FEED VIEW ============ -->
+    <div id="view-feed" class="view">
+      <div class="mb-6">
+        <div class="text-[28px] font-semibold tracking-[-0.4px]">Feed</div>
+        <div class="text-sm text-[#64748b]">Trending across the LBRY network</div>
+      </div>
+      <div id="feed-grid" class="content-grid"></div>
+    </div>
+
+    <!-- ============ LATEST VIEW ============ -->
+    <div id="view-latest" class="view">
+      <div class="mb-6">
+        <div class="text-[28px] font-semibold tracking-[-0.4px]">Latest</div>
+        <div class="text-sm text-[#64748b]">Newest releases on the network</div>
+      </div>
+      <div id="latest-grid" class="content-grid"></div>
+    </div>
+
+    <!-- ============ SEARCH VIEW ============ -->
+    <div id="view-search" class="view">
+      <div class="mb-6">
+        <div class="text-[28px] font-semibold tracking-[-0.4px]">Search</div>
+        <input id="search-input" type="text" placeholder="Search claims on LBRY..." 
+               class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm focus:border-[#14b8a6] outline-none mt-3">
+      </div>
+      <div id="search-grid" class="content-grid"></div>
+      <div id="search-status" class="text-xs text-[#64748b] mt-4"></div>
+    </div>
+
+    <!-- ============ LIBRARY VIEW ============ -->
+    <div id="view-library" class="view">
+      <div class="mb-6">
+        <div class="text-[28px] font-semibold tracking-[-0.5px]">Library</div>
+        <div class="text-sm text-[#64748b] mt-1">Your saved items and recently watched</div>
+      </div>
+
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <!-- Vault / Bookmarks -->
+        <div class="premium-section">
+          <div class="uppercase text-xs tracking-[1px] text-[#64748b] mb-3 font-medium">Saved</div>
+          <div id="library-vault" class="space-y-3 text-sm"></div>
+        </div>
+
+        <!-- History -->
+        <div class="premium-section">
+          <div class="uppercase text-xs tracking-[1px] text-[#64748b] mb-3 font-medium">Recently Played</div>
+          <div id="library-history" class="space-y-3 text-sm"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ WALLET VIEW ============ -->
+    <div id="view-wallet" class="view">
+      <div class="max-w-[860px] mx-auto">
+        <div class="mb-6">
+          <div class="text-[28px] font-semibold tracking-[-0.4px]">Wallet</div>
+          <div class="text-sm text-[#64748b]">Manage your LBC balance and transactions</div>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Balance -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="flex justify-between items-center">
+              <div class="text-sm font-semibold">LBC Balance</div>
+              <div id="wallet-balance" class="font-mono text-2xl text-emerald-400">—</div>
+            </div>
+          </div>
+
+          <!-- Receive -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="text-sm font-semibold mb-3">Receive LBC</div>
+            <div class="flex gap-2 mb-3">
+              <input id="wallet-receive-addr" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm font-mono" readonly />
+              <button id="wallet-copy-addr" class="action-btn">Copy</button>
+            </div>
+            <button id="wallet-gen-addr" class="action-btn mb-3">Generate New Address</button>
+            <div>
+              <div class="text-xs text-[#64748b] mb-1">Last Received Transactions</div>
+              <div id="wallet-last-received" class="text-xs bg-[#0a0a0f] p-2 rounded"></div>
+            </div>
+          </div>
+
+          <!-- Send -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="text-sm font-semibold mb-3">Send LBC</div>
+            <input id="wallet-send-addr" placeholder="Recipient LBC address" class="w-full bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm mb-2" />
+            <div class="flex gap-2 mb-2">
+              <input id="wallet-send-amount" placeholder="Amount in LBC" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm" />
+              <button id="wallet-send-btn" class="action-btn teal">Send</button>
+            </div>
+            <div class="text-xs text-[#64748b]">Estimated fee: <span id="wallet-tx-fee">0.0001</span> LBC</div>
+            <div class="mt-3">
+              <div class="text-xs text-[#64748b] mb-1">Last Sent Transactions</div>
+              <div id="wallet-last-sent" class="text-xs bg-[#0a0a0f] p-2 rounded"></div>
+            </div>
+          </div>
+
+          <!-- History -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="text-sm font-semibold mb-3">Transaction History</div>
+            <div id="wallet-history" class="text-xs bg-[#0a0a0f] p-3 rounded max-h-48 overflow-auto">Loading...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ SETTINGS VIEW (own dedicated page) ============ -->
+    <div id="view-settings" class="view">
+      <div class="max-w-[620px] mx-auto">
+        <div class="mb-10">
+          <h1 class="text-3xl font-semibold tracking-tight">Settings</h1>
+          <p class="text-base text-[#64748b] mt-2">Manage your connection to the LBRY network and protocol handler.</p>
+        </div>
+
+        <div class="space-y-6">
+          <!-- Connection Status -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="flex items-center justify-between mb-3">
+              <div>
+                <div class="text-sm font-semibold tracking-wide">Connection Status</div>
+                <div class="text-xs text-[#64748b] mt-0.5">Real-time daemon health</div>
+              </div>
+              <button id="settings-refresh-btn" class="action-btn text-xs">Refresh</button>
+            </div>
+            <div id="settings-status" class="bg-[#0a0a0f] border border-[#27272a] rounded-xl p-4 text-sm font-mono leading-relaxed"></div>
+          </div>
+
+          <!-- Daemon Configuration -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="mb-3">
+              <div class="text-sm font-semibold tracking-wide">Daemon RPC URL</div>
+              <div class="text-xs text-[#64748b] mt-0.5">Address of your local LBRY daemon or ReviveL Companion</div>
+            </div>
+            <input id="settings-daemon-input" 
+                   class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm font-mono focus:border-[#14b8a6] outline-none transition"
+                   placeholder="http://127.0.0.1:5279">
+            <div class="text-xs text-[#14b8a6] mt-2">Auto-detected at <span class="font-mono">http://127.0.0.1:5279</span> when Companion is running.</div>
+
+            <div class="flex gap-3 mt-4">
+              <button id="settings-detect-btn" class="action-btn flex-1 justify-center bg-emerald-900 border-emerald-700 text-emerald-300 hover:bg-emerald-800">Re-Detect Companion</button>
+              <button id="settings-save-btn" class="action-btn flex-1 justify-center teal">Save URL</button>
+            </div>
+          </div>
+
+          <!-- Protocol & Info -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="mb-3">
+              <div class="text-sm font-semibold tracking-wide">lbry:// Protocol Support</div>
+            </div>
+            <div class="text-sm text-[#cbd5e1] leading-relaxed">
+              ReviveL registers as a handler for <code class="font-mono">lbry:</code> URLs via the Companion.<br>
+              When the Companion is installed and running, <code class="font-mono">lbry://</code> addresses will open directly in ReviveL.
+            </div>
+            <div class="mt-4 text-xs flex items-center gap-2">
+              <span class="inline-block w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span class="text-emerald-400 font-medium">Enabled</span> (requires ReviveL Companion)
+            </div>
+            <button id="get-companion-btn" class="action-btn mt-4 text-xs">Get the ReviveL Companion</button>
+          </div>
+
+          <div class="text-xs text-[#64748b] px-1 leading-relaxed">
+            Settings are shared with the popup. A local daemon is required for full-resolution streams and publishing.
+          </div>
+
+          <!-- Wallet Config -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6 mt-6">
+            <div class="mb-3">
+              <div class="text-sm font-semibold tracking-wide">Wallet Configuration</div>
+            </div>
+            <div class="flex gap-3">
+              <button id="wallet-create-btn" class="action-btn flex-1 justify-center">Create New Wallet</button>
+              <button id="wallet-close-btn" class="action-btn flex-1 justify-center">Close Wallet</button>
+              <button id="wallet-delete-btn" class="action-btn flex-1 justify-center bg-red-900 border-red-700 text-red-300 hover:bg-red-800">Delete Wallet</button>
+            </div>
+            <div id="wallet-seed-display" class="mt-4 text-xs bg-[#0a0a0f] p-3 rounded hidden font-mono break-all"></div>
+            <div class="text-xs text-red-400 mt-2 hidden" id="wallet-delete-confirm">ARE YOU SURE YOU WANT TO DELETE YOUR WALLET? This cannot be undone.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script type="module" src="./player.ts"></script>
+</body>
+</html>

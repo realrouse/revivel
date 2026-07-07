@@ -1,0 +1,29 @@
+{
+  "name": "revivel",
+  "version": "0.3.0",
+  "description": "ReviveL - LBRY protocol browser extension. lbry:// support + right-click uploads from anywhere.",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && echo 'dist/ ready. Load unpacked in chrome://extensions'",
+    "build": "tsc && node scripts/build-extension.cjs",
+    "preview": "echo 'dist/ ready for unpacked load'",
+    "build:chrome": "npm run build",
+    "build:firefox": "npm run build",
+    "clean": "rm -rf dist"
+  },
+  "keywords": ["lbry", "odysee", "browser-extension", "revivel"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@crxjs/vite-plugin": "^1.0.14",
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^18.0.0",
+    "@types/react": "^18.0.0",
+    "@types/react-dom": "^18.0.0",
+    "@vitejs/plugin-react": "^4.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.4.5",
+    "vite": "^4.5.3"
+  }
+}

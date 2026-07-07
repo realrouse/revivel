@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "ReviveL",
+  "version": "0.3.0",
+  "description": "Revive the LBRY protocol. Beautifully browse, play, and publish to LBRY from anywhere on the web.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "ReviveL",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "downloads",
+    "tabs",
+    "activeTab",
+    "omnibox",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://api.na-backend.odysee.com/*",
+    "https://odysee.com/*",
+    "https://*.odysee.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "omnibox": {
+    "keyword": "rev"
+  },
+  "protocol_handlers": [
+    {
+      "protocol": "lbry",
+      "name": "ReviveL",
+      "uriTemplate": "player.html?uri=%s"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["player.html", "overlay.html", "icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "options_page": "options.html"
+}
