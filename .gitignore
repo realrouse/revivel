@@ -1,8 +1,10 @@
 # Dependencies
 node_modules/
+# package-lock.json   # Usually recommended to commit package-lock.json for reproducible installs
 
 # Build outputs
 dist/
+build/
 *.tsbuildinfo
 
 # IDE / Editor
@@ -10,25 +12,34 @@ dist/
 .vscode/
 *.swp
 *.swo
+*.sublime-project
+*.sublime-workspace
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Logs
 *.log
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
-# Environment
+# Environment variables
 .env
 .env.local
 .env.*.local
+*.env
 
 # Misc
 *.bak
 *.tmp
+.cache/
+coverage/
 
-# Optional: If you don't want to commit large design assets
+# Design assets (uncomment if you want to exclude large design folders)
 # visuals/
 # logo_concepts/
 # concept_images/
+# chosen_logos/

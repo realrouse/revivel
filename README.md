@@ -2,136 +2,118 @@
 
 > Revive the LBRY protocol. Beautifully browse, play, and publish to LBRY from anywhere on the web.
 
-ReviveL is a Manifest V3 browser extension that brings first-class `lbry://` support, right-click uploads, and seamless LBRY experiences into your normal browser.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-blue?logo=google-chrome)](https://chrome.google.com/webstore)
+[![Manifest V3](https://img.shields.io/badge/Manifest-V3-green)](https://developer.chrome.com/docs/extensions/mv3/)
 
-It follows a practical **two-tier architecture** (inspired by real constraints discussed with the LBRY community):
+ReviveL is a modern **Manifest V3** browser extension that brings first-class `lbry://` support, right-click uploads, and a great LBRY experience directly into your normal browser.
 
-- **Public / Zero-install tier**: Works immediately using Odysee public APIs. Resolve and play any `lbry://` content.
-- **Local daemon tier**: Connect to your own running `lbrynet` for full features (publishing, your own streams, better privacy).
+It uses a practical **two-tier architecture**:
 
-## Features (Current)
+- **Public / Zero-install tier** — Works immediately using Odysee public APIs. No setup required.
+- **Local daemon tier** — Connect to your own `lbrynet` (via the ReviveL Companion) for full features like publishing and better privacy.
 
-- `lbry://` protocol handler + omnibox (`rev ` keyword)
+---
+
+## ✨ Features
+
+- `lbry://` protocol handler + omnibox support (`rev ` keyword)
 - Right-click any image → "Upload image to ReviveL"
-- Beautiful popup with Revival Feed, New content, and local **My Vault**
-- Dedicated player page for rich viewing
-- Content script that enhances `lbry://` links on any web page + "Revive" hover on images
-- Options for connecting a local lbrynet daemon
-- All UI matches the original concept designs (dark teal phoenix aesthetic)
+- Beautiful popup with:
+  - Revival Feed & Latest content
+  - Local My Vault
+  - Full **Wallet** tab (balance, send/receive, history)
+- Dedicated full player page (`player.html`)
+- Hybrid floating player (in-page overlay + detachable persistent popup window)
+- Content script enhancements for `lbry://` links on any website
+- Wallet support (SPV via local daemon)
+- Settings for connecting a local lbrynet daemon
+- Dark teal aesthetic matching the original concept designs
 
-## Quick Start (Public Tier — Works Now)
+## 🚀 Quick Start (Public Tier)
 
-1. Build and load the extension (see below).
-2. Click the ReviveL icon or type `rev ` in the address bar + a claim (e.g. `rev @lbry/revival-decentralized`).
-3. Right-click images on the web (or Grok generations) and choose **Upload image to ReviveL**.
-4. Use the player for `lbry://` links.
+1. Build and load the extension (see Development section below).
+2. Click the ReviveL icon or type `rev ` in the address bar followed by a claim.
+3. Right-click images anywhere on the web and choose **Upload image to ReviveL**.
+4. Enjoy `lbry://` links and the full player.
 
-No daemon required for discovery and playback.
+No local daemon is required for browsing and playback.
 
-## For Full Power: Run a Local Daemon
+## 🛠 For Full Power: Local Daemon + ReviveL Companion
 
-This unlocks real publishing from the extension and direct use of the LBRY network.
+For real publishing, your own streams, and wallet features, connect to a local daemon.
 
-### Recommended (Easiest)
-- Download **LBRY Desktop** (or the standalone daemon binaries) from the community / official archives.
-- Run `lbrynet start` (it listens on http://127.0.0.1:5279 by default).
+### Easiest Way
+1. Run `lbrynet start` (or use LBRY Desktop).
+2. In ReviveL → Settings → set `http://127.0.0.1:5279`
+3. Save and enjoy full features.
 
-### Minimal
-```bash
-# Example (exact binaries and flags depend on your build)
-lbrynet start --api 127.0.0.1:5279
-```
+See the [plan.md](./plan.md) for more technical details.
 
-Then in ReviveL:
-- Open options (gear icon) or settings
-- Enter `http://127.0.0.1:5279` (or leave blank for public proxy)
-- Save
-
-The extension will prefer the daemon when configured and fall back gracefully.
-
-**Status indicators** will show whether you're in public mode or connected to your local node.
-
-See also the excellent **lbry-nova-web** project (React web UI that talks to your daemon):
-https://github.com/LBRYFoundation/lbry-nova-web
-
-## Development
+## 💻 Development
 
 ### Requirements
-- Node 18+
-- `npm install`
+- Node.js 18+
+- npm
 
 ### Build
 
 ```bash
+npm install
 npm run build
 ```
 
-This runs `tsc` + the post-build script and produces a loadable extension in `dist/`.
+This produces a ready-to-load extension in the `dist/` folder.
 
-### Load Unpacked
+### Load the Extension
 
 **Chrome / Edge / Brave**:
 1. Go to `chrome://extensions`
-2. Enable "Developer mode"
-3. "Load unpacked" → select the `dist/` folder
+2. Turn on **Developer mode**
+3. Click **Load unpacked**
+4. Select the `dist/` folder
 
-**Firefox** (developer):
-- Use `web-ext` or load as temporary add-on from `about:debugging`.
+After loading, try the popup, the context menu on images, and typing `rev ` in the address bar.
 
-After loading, pin the extension and try the popup, context menu on images, and `rev ` in the omnibox.
-
-### Project Structure
+## 📁 Project Structure
 
 ```
 src/
-├── background.ts          # Service worker: context menus, RPC, omnibox, protocol
-├── content.ts             # Page script: enhance lbry:// links + Revive badges
+├── background.ts          # Service worker (RPC, context menus, omnibox, protocol handling)
+├── content.ts             # Enhances lbry:// links + image revive badges
 ├── manifest.json
-├── utils/lbryApi.ts       # Client for resolve (dual public/daemon)
-├── popup/                 # Compact beautiful popup UI + upload flow + vault
-├── player/                # Full player page (opened for lbry:// URIs)
-└── options/               # Daemon URL settings
+├── utils/lbryApi.ts
+├── popup/                 # Extension popup UI (Feed, Vault, Wallet)
+├── player/                # Full-featured player page
+├── overlay/               # Floating player (iframe + detached popup)
+└── options/               # Settings page
 ```
 
-Icons live in `icons/` (source of truth) and are copied to `public/icons/` and `dist/icons/`.
+## 🏗 Architecture
 
-## Architecture Notes
+- All LBRY RPC calls go through the background service worker.
+- Supports both public Odysee proxy and local `lbrynet` daemon.
+- The floating player uses a hybrid model (in-page overlay + detachable always-available popup window).
+- Wallet features require a local daemon with SPV wallet support.
 
-- All LBRY RPC goes through the background service worker (avoids most CORS issues).
-- `resolveLbryUri(uri)` in popup/player talks to background via `chrome.runtime.sendMessage`.
-- Background chooses endpoint:
-  - If daemon URL configured → `http://127.0.0.1:5279`
-  - Else → public Odysee proxy `https://api.na-backend.odysee.com/api/v1/proxy`
-- Upload from context menu stores context and opens the popup's publish form.
-- Vault is stored locally in `chrome.storage.local` for the demo (real publishes would go to the chain via daemon).
+## 🤝 Contributing
 
-## Publishing (Upload) Status
+Contributions are welcome! Feel free to open issues or pull requests.
 
-- **Public mode**: Generates a ready-to-use `lbrynet publish` CLI snippet + button to open Odysee upload page (assisted flow).
-- **Daemon mode**: The form can attempt a real `stream_create` / publish RPC (work in progress — requires the daemon + some LBC).
+1. Fork the repo
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes
+4. Push to the branch
+5. Open a Pull Request
 
-See `plan.md` for the detailed phased roadmap and verification steps.
+Please read the existing code style and try to follow the patterns used in the popup and player components.
 
-## Roadmap Highlights (from plan.md)
+## 📜 License
 
-- [x] Beautiful UI shell + vault + context menu + protocol handler declaration
-- [ ] Real resolve against public proxy (in progress)
-- [ ] Real daemon status check + connection test
-- [ ] Wire player + popup to use live resolve results + streaming_url
-- [ ] Assisted publish (CLI + Odysee) + daemon publish attempt
-- [ ] Excellent README + onboarding
-- [ ] Polish, error states, Firefox testing
-
-## Credits & Inspiration
-
-- LBRY community (Discord discussions on daemon-in-extension realities)
-- lbry-nova-web (https://github.com/LBRYFoundation/lbry-nova-web) — the reference pattern for daemon access from web tech
-- Existing "Watch on LBRY" / Odysee browser extensions for manifest patterns
-
-## License
-
-MIT
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-**Note**: LBRY is a decentralized protocol. You are responsible for the content you publish. This extension is a community tool and is not affiliated with any former LBRY corporate entity.
+**Note**: LBRY is a decentralized protocol. You are responsible for the content you publish and for running your own infrastructure when using the local daemon tier.
+
+Not affiliated with any former LBRY corporate entity. Built for the community.
