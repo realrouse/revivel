@@ -6,12 +6,124 @@ const PUBLIC_PROXY = 'https://api.na-backend.odysee.com/api/v1/proxy'
 let daemonUrl: string | null = null
 let lastKnownBlockHeight = 0
 
+// RPC credentials (user/pass) delivered securely via Native Messaging from the ReviveL Companion.
+// Never stored in browser storage; kept in-memory only. Used for Basic Auth on local daemon.
+let cachedRpcCredentials: { user: string; pass: string } | null = null
+
+/**
+ * Requests RPC credentials from the ReviveL Companion using Native Messaging.
+ * Matches the live Companion implementation:
+ *   Request:  { type: "get-rpc-credentials" }
+ *   Success:  { success: true, user: "<rpcuser>", pass: "<rpcpass>" }
+ *   Error:    { success: false, error: "..." }
+ *
+ * Credentials are used for HTTP Basic Auth on local daemon RPCs.
+ * They are kept only in memory (never persisted to browser storage).
+ */
+async function requestCredentialsFromCompanion(): Promise<{ user: string; pass: string } | null> {
+  if (cachedRpcCredentials) {
+    return cachedRpcCredentials
+  }
+
+  try {
+    const response: any = await chrome.runtime.sendNativeMessage(
+      'revivel_companion',
+      { type: 'get-rpc-credentials' }
+    )
+
+    if (response) {
+      if (response.success === false) {
+        console.warn('[ReviveL] Companion credential error:', response.error || 'unknown error')
+        return null
+      }
+
+      // Prefer the documented "user"/"pass" fields, with graceful fallback
+      const user = response.user || response.rpcuser || response.rpc_user
+      const pass = response.pass || response.rpcpass || response.rpc_pass
+
+      if (user && pass) {
+        cachedRpcCredentials = { user, pass }
+        return cachedRpcCredentials
+      }
+
+      // If success true but no creds, or legacy direct object without success flag
+      if ((response.user || response.rpcuser) && (response.pass || response.rpcpass)) {
+        const u = response.user || response.rpcuser
+        const p = response.pass || response.rpcpass
+        cachedRpcCredentials = { user: u, pass: p }
+        return cachedRpcCredentials
+      }
+    }
+  } catch (err: any) {
+    console.warn('[ReviveL] Native messaging for RPC credentials failed:', err?.message || err)
+  }
+
+  return null
+}
+
+/** Invalidate cached credentials (e.g. when daemon URL changes or on logout) */
+function clearRpcCredentials() {
+  cachedRpcCredentials = null
+}
+
+/**
+ * Proxy an RPC call through the ReviveL Companion using Native Messaging.
+ * The Companion performs the actual authenticated request to lbrynet.
+ */
+async function rpcCallViaCompanion(method: string, params: any = {}) {
+  try {
+    const response: any = await chrome.runtime.sendNativeMessage("revivel_companion", {
+      type: "rpc_call",
+      method,
+      params
+    });
+
+    if (response?.error) {
+      const msg = typeof response.error === 'string'
+        ? response.error
+        : (response.error.message || JSON.stringify(response.error));
+      throw new Error(msg);
+    }
+
+    // Raw lbrynet JSON-RPC response shape: { jsonrpc: "2.0", result: ..., error?: ... }
+    if (response && typeof response === 'object' && 'jsonrpc' in response) {
+      if (response.error) {
+        const err = response.error;
+        throw new Error(typeof err === 'string' ? err : (err.message || JSON.stringify(err)));
+      }
+      return response.result;
+    }
+
+    // If Companion returned the inner result directly, or other shape
+    if (response && response.result !== undefined) {
+      return response.result;
+    }
+
+    return response;
+  } catch (err: any) {
+    throw new Error(`Companion RPC proxy error: ${err.message || err}`);
+  }
+}
+
 // For tab-following floating player
 let currentFloating: { uri: string; title?: string; streamUrl?: string | null; lastTime: number; tabId: number } | null = null
 let lastActiveWebTabId: number | null = null
 
 chrome.storage.sync.get(['daemonUrl'], (r: any) => { if (r.daemonUrl) daemonUrl = r.daemonUrl })
-chrome.storage.onChanged.addListener((c: any) => { if (c.daemonUrl) daemonUrl = c.daemonUrl.newValue })
+chrome.storage.onChanged.addListener((c: any) => {
+  if (c.daemonUrl) {
+    daemonUrl = c.daemonUrl.newValue
+    clearRpcCredentials()
+  }
+})
+
+// Proactively request credentials from Companion if we have a local daemon configured.
+// This uses Native Messaging. Will retry on actual RPC calls if not yet available.
+if (daemonUrl && (daemonUrl.includes('127.0.0.1') || daemonUrl.includes('localhost'))) {
+  requestCredentialsFromCompanion().catch(() => {
+    // Non-fatal; will retry (including explicit retry in makeAuthenticatedRequest)
+  })
+}
 
 // === Tab-following floating player support ===
 chrome.tabs.onActivated.addListener(async ({ tabId }) => {
@@ -109,22 +221,65 @@ function getRpcEndpoint(): string {
   return daemonUrl || PUBLIC_PROXY
 }
 
+/**
+ * Fallback direct fetch helper (used when NM rpc_call is not available).
+ * Adds HTTP Basic Auth when we have credentials from get-rpc-credentials.
+ */
+async function makeAuthenticatedRequest(endpoint: string, body: any) {
+  const isLocalDaemon = endpoint.includes('127.0.0.1') || endpoint.includes('localhost')
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Origin': 'http://localhost'
+  }
+
+  if (isLocalDaemon) {
+    let creds = await requestCredentialsFromCompanion()
+    if (!creds) {
+      // Retry once in case credentials became available (Companion just started)
+      clearRpcCredentials()
+      creds = await requestCredentialsFromCompanion()
+    }
+
+    if (creds) {
+      const auth = btoa(`${creds.user}:${creds.pass}`)
+      headers['Authorization'] = `Basic ${auth}`
+    } else {
+      // No credentials; direct call may fail auth on secured Companion (will 401).
+    }
+  }
+
+  return fetch(endpoint, {
+    method: 'POST',
+    mode: 'cors',
+    cache: 'no-store',
+    headers,
+    body: JSON.stringify(body)
+  })
+}
+
 async function rpcCall(method: string, params: any = {}) {
   const endpoint = getRpcEndpoint()
+  const isLocalDaemon = !!daemonUrl && (daemonUrl.includes('127.0.0.1') || daemonUrl.includes('localhost'))
+
+  if (isLocalDaemon) {
+    try {
+      // Prefer routing through Companion Native Messaging proxy (Companion handles auth + request)
+      return await rpcCallViaCompanion(method, params)
+    } catch (e: any) {
+      // Fallback to direct fetch (for non-Companion local daemons or if NM proxy fails)
+      console.warn('[ReviveL] rpc_call via Companion failed, falling back to direct:', e?.message || e)
+    }
+  }
+
   try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      mode: 'cors',
-      cache: 'no-store',  // ensure no HTTP cache serves stale claim_search results etc.
-      headers: {
-        'Content-Type': 'application/json',
-        'Origin': 'http://localhost'
-      },
-      body: JSON.stringify({ method, params })
-    })
+    const res = await makeAuthenticatedRequest(endpoint, { method, params })
     if (!res.ok) {
       if (res.status === 403) {
-        throw new Error(`RPC HTTP 403 (Forbidden). The daemon may need to be started with --allowed-origin "*" or similar flag.`)
+        throw new Error(`RPC HTTP 403 (Forbidden). The daemon may need to be started with --allowed-origin flag.`)
+      }
+      if (res.status === 401) {
+        throw new Error(`RPC HTTP 401 (Unauthorized). Companion not providing credentials. Make sure the ReviveL Companion is installed, running, and has delivered user/pass via Native Messaging.`)
       }
       throw new Error(`RPC HTTP ${res.status}`)
     }
@@ -367,27 +522,38 @@ async function getStatusViaRpc() {
   let localStatusResult = null
   let probeSucceeded = false
 
+  // Prefer Companion NM proxy for status to avoid direct HTTP from extension
   try {
-    const probeRes = await fetch(LOCALHOST, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ method: 'status', params: {} })
-    })
-
-    if (probeRes.ok) {
-      const probeJson = await probeRes.json()
-      if (probeJson) {
-        // Accept either full envelope or direct result
-        localStatusResult = probeJson.result || probeJson
-        probeSucceeded = true
-        if (!daemonUrl || daemonUrl !== LOCALHOST) {
-          daemonUrl = LOCALHOST
-          chrome.storage.sync.set({ daemonUrl: LOCALHOST })
-        }
-      }
+    const statusResult = await rpcCallViaCompanion('status', {})
+    localStatusResult = statusResult
+    probeSucceeded = true
+    if (!daemonUrl || daemonUrl !== LOCALHOST) {
+      daemonUrl = LOCALHOST
+      chrome.storage.sync.set({ daemonUrl: LOCALHOST })
     }
   } catch (e) {
-    // ignore, will fall through
+    // Companion NM not available or failed — fall back to direct probe (for plain lbrynet or older setups)
+  }
+
+  if (!probeSucceeded) {
+    try {
+      const probeRes = await makeAuthenticatedRequest(LOCALHOST, { method: 'status', params: {} })
+
+      if (probeRes.ok) {
+        const probeJson = await probeRes.json()
+        if (probeJson) {
+          // Accept either full envelope or direct result
+          localStatusResult = probeJson.result || probeJson
+          probeSucceeded = true
+          if (!daemonUrl || daemonUrl !== LOCALHOST) {
+            daemonUrl = LOCALHOST
+            chrome.storage.sync.set({ daemonUrl: LOCALHOST })
+          }
+        }
+      }
+    } catch (e) {
+      // ignore, will fall through
+    }
   }
 
   try {
@@ -415,6 +581,7 @@ async function getStatusViaRpc() {
         bestBlockhash: blockchain.best_blockhash || '',
         spvServer: wallet.server || connection.server || fullStatus.spv || 's1.lbry.network:50001',
         using: 'daemon',
+        hasCredentials: !!cachedRpcCredentials,
         rawStatus: fullStatus
       }
     } else if (daemonUrl) {
@@ -442,6 +609,7 @@ async function getStatusViaRpc() {
         bestBlockhash: blockchain.best_blockhash || '',
         spvServer: wallet.server || connection.server || 'unknown',
         using: 'daemon',
+        hasCredentials: !!cachedRpcCredentials,
         rawStatus: fullStatus
       }
     } else {
@@ -459,7 +627,10 @@ async function getStatusViaRpc() {
     if (daemonUrl || probeSucceeded) {
       let friendly = errStr
       if (errStr.includes('403')) {
-        friendly = 'RPC HTTP 403 Forbidden. The daemon is likely running but not allowing requests from the extension. Restart the ReviveL Companion (or lbrynet) with the flag: --allowed-origin "*"'
+        friendly = 'RPC HTTP 403 Forbidden. The daemon may need the --allowed-origin flag for the extension.'
+      }
+      if (errStr.includes('401')) {
+        friendly = 'RPC HTTP 401 Unauthorized. Companion not providing credentials. Ensure the ReviveL Companion is installed and running (it must deliver user/pass via Native Messaging).'
       }
       return { 
         connected: false, 
@@ -505,8 +676,12 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
 // Helper: open the full player for a URI, focusing an existing tab if one is already open for it
 //
-// Native Messaging (for future Companion integration):
-// The Companion can use chrome.runtime.sendNativeMessage("revivel_companion", { type: "open-lbry-uri", uri: "lbry://..." })
+// Native Messaging integration with ReviveL Companion:
+// - "get-rpc-credentials": returns { success: true, user, pass } for direct fallback mode
+// - "rpc_call": preferred path for local Companion. Extension sends { type: "rpc_call", method, params }
+//   Companion forwards with proper auth and returns the raw lbrynet response { jsonrpc, result } or error.
+// - This avoids the extension directly talking to lbrynet (reduces need for --allowed-origin on main path).
+
 // We also accept the same message via chrome.runtime.sendMessage for flexibility.
 // Host manifest will be provided by the Companion installer.
 async function openOrFocusPlayer(uri: string, title?: string) {
@@ -549,6 +724,7 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
   }
   if (msg.type === 'setDaemonUrl') {
     daemonUrl = msg.url || null
+    clearRpcCredentials()
     chrome.storage.sync.set({ daemonUrl })
     sendResponse({ ok: true })
     return true
@@ -883,7 +1059,8 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
 
   // Wallet / SPV functions
   // Per INTEGRATION.md from ReviveL Companion:
-  // - All calls are direct to standard lbrynet JSON-RPC at 127.0.0.1:5279
+  // - For Companion-managed local daemon: prefer "rpc_call" via Native Messaging (Companion proxies with auth)
+  // - Fallback: direct to 127.0.0.1:5279 (using get-rpc-credentials + Basic Auth if available)
   // - Start with account_list to get default account_id
   // - Use list for addresses in wallet_send (not map)
   // - wallet_create does NOT return seed; call wallet_seed after
