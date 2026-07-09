@@ -326,7 +326,7 @@ function createFloatingPlayer(data: { uri: string; title?: string; streamUrl?: s
   container.style.cssText = `
     position:fixed; right:20px; bottom:20px; 
     width:min(420px, 42vw); min-width:300px; 
-    height:auto; min-height:260px; max-height:65vh;
+    height: 300px; min-height:260px; max-height:65vh;
     background:#0f172a; color:#e2e8f0; 
     border:1px solid #334155; border-radius:16px; 
     box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.5), 0 10px 10px -6px rgb(0 0 0 / 0.4);
@@ -363,7 +363,7 @@ function createFloatingPlayer(data: { uri: string; title?: string; streamUrl?: s
   if (data.startTime && data.startTime > 0) q.set('startTime', String(data.startTime));
   const overlaySrc = (chrome as any).runtime.getURL('overlay.html') + '?' + q.toString();
   iframe.src = overlaySrc;
-  iframe.style.cssText = 'flex:1; width:100%; border:0; background:#000; display:block;';
+  iframe.style.cssText = 'flex:1; width:100%; height:100%; border:0; background:#000; display:block;';
   iframe.setAttribute('allowfullscreen', 'true');
   iframe.setAttribute('allow', 'fullscreen');
 
@@ -792,7 +792,7 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
       const tab = tabs[0];
       if (!tab?.id) return;
 
-      // Resolve to get title and possibly streaming_url (using daemon if connected)
+      // Resolve to get title (and streamUrl if available from resolve)
       let title = uri;
       let streamUrl = null;
       try {
@@ -807,14 +807,24 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
         }
       } catch (e) {}
 
-      // Always try to acquire/refresh the stream if daemon connected (try harder to get streaming_url)
-      try {
-        const status = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
-        if (status && status.connected) {
+      // For public mode, do NOT pre-acquire streamUrl here (the URL from 'get' can be short-lived and 401 later).
+      // Let the overlay do a fresh tryAcquireStream() right when it's ready to play.
+      // Only pre-acquire if we have a local daemon (more reliable URLs).
+
+      const status = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
+      const hasDaemon = status && status.connected;
+
+      if (hasDaemon && !streamUrl) {
+        try {
           const getResp = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'streamGet', uri }, r));
           if (getResp && getResp.ok) {
             const g = getResp.result;
-            const gotUrl = g?.streaming_url || g?.file?.streaming_url || g?.stream?.streaming_url || (g?.value && g.value.streaming_url) || null;
+            const gotUrl = g?.streaming_url || 
+                           g?.file?.streaming_url || 
+                           g?.stream?.streaming_url || 
+                           (g?.value && g.value.streaming_url) ||
+                           g?.result?.streaming_url ||
+                           null;
             if (gotUrl) {
               streamUrl = gotUrl;
             }
@@ -822,8 +832,8 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
               title = g.title || g.value?.title || uri;
             }
           }
-        }
-      } catch (e) {}
+        } catch (e) {}
+      }
 
       const data = {
         uri,

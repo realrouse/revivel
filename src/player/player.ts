@@ -1,9 +1,9 @@
 // ReviveL Full Player — Complete redesign with menu bar + all popup functions + creative additions
 import { 
-  resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, 
+  resolveLbryUri, extractClaim, getPlayableUrl, buildPublicStreamUrl, getOdyseeEmbedUrl, searchLbryClaims, 
   getDaemonStatus, setDaemonUrl,
   getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed,
-  getClaimTimestamp
+  getClaimTimestamp, getRandomSearchWords, dedupClaims, WORD_LIBRARY_LABELS, getLibraryWords
 } from '../utils/lbryApi.js'
 
 let currentUri = new URLSearchParams(location.search).get('uri') || 'lbry://what'
@@ -12,16 +12,39 @@ let currentClaim: any = null
 let currentView: string = 'player'
 let feedItems: any[] = []
 let latestItems: any[] = []
+let searchItems: any[] = []
 let vault: any[] = []
 let history: any[] = []
 let daemonConnected = false
+let prevDaemonConnected = false
+
+// Pagination + load-more state (Feed/Search always stake sorted; Latest only date sorted)
+let feedPage = 1
+let latestPage = 1
+let searchPage = 1
+let feedHasMore = true
+let latestHasMore = true
+let searchHasMore = true
+let isLoadingMoreFeed = false
+let isLoadingMoreLatest = false
+let isLoadingMoreSearch = false
+let currentFeedFilter: 'all' | 'month' | 'week' | 'high' | 'veryhigh' = 'all'
+let currentWordLibrary = 'general'
+
+// Fetch IDs to discard results from stale/older concurrent fetches (prevents videos from old public fetches
+// overwriting fresh Companion results or vice versa when mode switches).
+let feedFetchId = 0
+let latestFetchId = 0
+let searchFetchId = 0
 
 // Listen for new blockchain blocks from background to refresh Latest
 chrome.runtime.onMessage.addListener((msg: any) => {
   if (msg.type === 'newBlock') {
     console.log('[ReviveL] New block detected:', msg.height)
-    // Refresh latest with fresh data
-    loadLatest()
+    // Refresh Latest top page (real-time new videos). Do not sort by stake ever.
+    latestPage = 1
+    latestHasMore = true
+    loadLatest(true /* replace top */)
   }
 })
 
@@ -40,8 +63,17 @@ function showView(view: string) {
 
   currentView = view
 
-  if (view === 'feed') loadFeed()  // always fetch fresh on switch (and on new blocks)
-  if (view === 'latest') loadLatest()  // always fetch fresh on switch (and on new blocks)
+  if (view === 'feed') {
+    feedPage = 1; feedHasMore = true; isLoadingMoreFeed = false; currentFeedFilter = 'all'
+    loadFeed()
+  }
+  if (view === 'latest') {
+    latestPage = 1; latestHasMore = true; isLoadingMoreLatest = false
+    loadLatest(true)
+  }
+  if (view === 'search') {
+    // keep searchItems; user types to (re)search
+  }
   if (view === 'library') loadLibrary()
   if (view === 'wallet') renderWallet()
   if (view === 'settings') renderSettings()
@@ -54,7 +86,17 @@ async function updateStatus() {
 
   try {
     const status: any = await getDaemonStatus()
-    daemonConnected = !!status?.connected
+    const wasConnected = daemonConnected
+    let useD = !!status?.connected;
+    const usingD = (status as any)?.using === 'daemon' || (status as any)?.isCompanion;
+    const ep = String((status as any)?.endpoint || '');
+    if (usingD || /127\.0\.0\.1|localhost/.test(ep)) useD = true;
+    try {
+      const cfg: any = await chrome.storage.sync.get(['daemonUrl']);
+      const du = String(cfg?.daemonUrl || '');
+      if (du.includes('127.0.0.1') || du.includes('localhost')) useD = true;
+    } catch (_) {}
+    daemonConnected = useD;
 
     if (daemonConnected) {
       dot.className = 'status-dot bg-emerald-400'
@@ -70,6 +112,21 @@ async function updateStatus() {
     pill.onclick = () => {
       showView('settings')
     }
+
+    // If Companion was just activated while we had public lists, clear stale data
+    // and refresh Feed/Latest with the daemon-backed results (e.g. highest support for Feed).
+    if (daemonConnected && !wasConnected) {
+      feedItems = []
+      latestItems = []
+      feedFetchId++
+      latestFetchId++
+      if (currentView === 'feed') {
+        loadFeed()
+      } else if (currentView === 'latest') {
+        loadLatest()
+      }
+    }
+    prevDaemonConnected = daemonConnected
   } catch (e) {
     dot.className = 'status-dot bg-red-400'
     text.textContent = 'Error'
@@ -152,24 +209,42 @@ async function loadVideo(uri: string) {
 
     let playable = getPlayableUrl(claim)
 
+    // In public mode, skip direct streaming attempts (they 401 or fail CORS).
+    // Only use direct video if we have a local daemon (Companion mode).
     if (!playable && daemonConnected) {
       try {
         const streamResp: any = await new Promise(r => chrome.runtime.sendMessage({ type: 'streamGet', uri }, r))
         if (streamResp?.ok) {
           const g = streamResp.result
-          playable = g?.streaming_url || g?.file?.streaming_url || g?.value?.streaming_url || g?.stream?.streaming_url
+          playable = g?.streaming_url || 
+                     g?.file?.streaming_url || 
+                     g?.stream?.streaming_url || 
+                     (g?.value && g.value.streaming_url) ||
+                     g?.result?.streaming_url ||
+                     null
         }
       } catch (_) {}
     }
 
-    if (playable) {
+    if (playable && daemonConnected) {
       playVideo(playable)
       addToHistory(uri, title, claim)
+    } else if (!daemonConnected) {
+      // Public mode: 100% use Odysee embed for reliable playback (bypasses all direct video issues)
+      const embedUrl = getOdyseeEmbedUrl(claim)
+      if (embedUrl) {
+        showEmbed(embedUrl)
+      } else {
+        // fallback to constructing from uri if claim ids missing
+        const clean = uri.replace('lbry://', '');
+        const embedUrlFallback = `https://odysee.com/$/embed/${clean}`;
+        showEmbed(embedUrlFallback);
+      }
     } else {
       const isDirectLaunch = !!new URLSearchParams(location.search).get('uri')
       const msg = isDirectLaunch 
-        ? 'This lbry:// link was opened via the ReviveL Companion.<br><br>Start the Companion to stream this content.'
-        : 'No direct playable stream found.<br>Connect the ReviveL Companion for full streams.'
+        ? 'This lbry:// link was opened via the ReviveL Companion.<br><br>Start the Companion for more reliable streams.'
+        : 'No playable stream URL found.<br>Connect the ReviveL Companion for full playback support.'
       showNoStream(msg)
     }
 
@@ -185,10 +260,44 @@ function playVideo(src: string) {
   overlay.classList.add('hidden')
   overlay.classList.remove('flex')
   videoEl.style.display = 'block'
-  videoEl.src = src
-  videoEl.load()
-  const p = videoEl.play()
-  if (p) p.catch(() => {})
+
+  const isLikelyHls = src.includes('.m3u8') || src.includes('/streams/') || src.includes('odycdn.com');
+
+  if (isLikelyHls && typeof (window as any).Hls === 'undefined') {
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+    script.onload = () => initPlayerVideo(src);
+    script.onerror = () => {
+      videoEl.src = src;
+      videoEl.load();
+      const p = videoEl.play(); if (p) p.catch(() => {});
+    };
+    document.head.appendChild(script);
+  } else {
+    initPlayerVideo(src);
+  }
+
+  // Error recovery for public streams
+  videoEl.onerror = () => {
+    console.warn('Full player video error for', src);
+    // Could add limited retry here if wanted, but for full player show the message
+  };
+}
+
+function initPlayerVideo(src: string) {
+  const isHls = src.includes('.m3u8') || src.includes('/streams/') || src.includes('odycdn.com');
+  if (isHls && (window as any).Hls && (window as any).Hls.isSupported()) {
+    const hls = new (window as any).Hls({ enableWorker: false, lowLatencyMode: true });
+    hls.loadSource(src);
+    hls.attachMedia(videoEl);
+    hls.on((window as any).Hls.Events.MANIFEST_PARSED, () => {
+      const p = videoEl.play(); if (p) p.catch(() => {});
+    });
+  } else {
+    videoEl.src = src;
+    videoEl.load();
+    const p = videoEl.play(); if (p) p.catch(() => {});
+  }
 }
 
 function showNoStream(msg: string) {
@@ -199,55 +308,134 @@ function showNoStream(msg: string) {
   videoEl.style.display = 'none'
 }
 
-// ===== More to Watch — 15 small grid cards =====
+function showEmbed(embedUrl: string) {
+  const overlay = document.getElementById('video-overlay')!
+  overlay.innerHTML = ''
+  overlay.classList.remove('hidden')
+  overlay.classList.add('flex')
+  videoEl.style.display = 'none'
+
+  // Ensure the container has size even when video is hidden (absolute overlay depends on it)
+  const relative = document.querySelector('.video-container .relative') as HTMLElement;
+  if (relative) {
+    relative.style.height = '60vh';
+    relative.style.minHeight = '360px';
+  }
+  const vc = document.querySelector('.video-container') as HTMLElement;
+  if (vc) {
+    vc.style.minHeight = '360px';
+  }
+
+  const iframe = document.createElement('iframe')
+  iframe.src = embedUrl
+  iframe.style.cssText = 'width:100%; height:100%; border:0; background:#000;'
+  iframe.allow = 'fullscreen; autoplay'
+  iframe.setAttribute('allowfullscreen', 'true')
+  overlay.style.background = 'black';
+  overlay.appendChild(iframe)
+}
+
+// ===== More to Watch — mix of (5 from top 100 staked, 5 from last 100 latest, 5 from top staked of a random word) =====
 async function loadMoreToWatch(excludeUri: string) {
   const grid = document.getElementById('more-grid')!
-  grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading 15 suggestions…</div>`
+  grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading mixed suggestions…</div>`
 
   try {
-    const [supported, recent] = await Promise.all([
-      searchLbryClaims({ claim_type: 'stream', order_by: ['effective_amount'], page_size: 10 }),
-      searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 30 })
-    ])
+    // Determine if companion for appropriate filters (but More to Watch mixes regardless)
+    let useCompanion = false
+    try {
+      const cfg: any = await chrome.storage.sync.get(['daemonUrl'])
+      const du = String(cfg?.daemonUrl || '')
+      if (du.includes('127.0.0.1') || du.includes('localhost')) useCompanion = true
+    } catch (_) {}
+    if (!useCompanion) {
+      try {
+        const st: any = await getDaemonStatus().catch(() => ({}))
+        const ep = String((st as any)?.endpoint || '')
+        if ((st as any)?.connected || (st as any)?.isCompanion || /127\.0\.0\.1|localhost/.test(ep)) useCompanion = true
+      } catch (_) {}
+    }
 
-    let all = [...(supported.items || []), ...(recent.items || [])]
+    const base = { claim_type: 'stream', stream_types: ['video'], has_source: true, page_size: 100 }
+    const pubFilters = useCompanion ? {} : { fee_amount: '<=0', not_tags: ['mature', 'nsfw'] }
+
+    // 1) Top 100 staked (highest LBC support)
+    const stakeRes = await searchLbryClaims({ ...base, ...pubFilters, order_by: ['effective_amount'] })
+    let topStaked = (stakeRes.items || []).slice(0, 100)
+
+    // 2) Last ~100 by time (latest videos)
+    const timeRes = await searchLbryClaims({ ...base, ...pubFilters, order_by: ['release_time'], page_size: 100 })
+    let lastVideos = (timeRes.items || []).slice(0, 100)
+
+    // 3) Pick a random popular word and get top staked matching it
+    const libWords = getLibraryWords(currentWordLibrary)
+    const randomWord = libWords[Math.floor(Math.random() * libWords.length)] || 'news'
+    const wordRes = await searchLbryClaims({ text: randomWord, ...base, ...pubFilters, order_by: ['effective_amount'], page_size: 30 })
+    let wordStaked = (wordRes.items || []).slice(0, 30)
+
+    // Client clean + timestamp sanitize + dedup across pools
     const seen = new Set<string>()
-    all = all.filter((c: any) => {
+    const clean = (list: any[]) => list.filter((c: any) => {
       const u = c.canonical_url || `lbry://${c.name}`
       if (u === excludeUri || seen.has(u)) return false
+      const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+      if (tags.some((t: string) => t === 'mature' || t === 'nsfw')) return false
       seen.add(u)
       return true
     })
 
-    // Re-sort the mixed pool by reliable timestamp (getClaimTimestamp).
-    // This drops stale items that had bogus high value.release_time (which made the server
-    // rank them in the release_time results) and ensures recent content bubbles to the top of More to Watch.
-    all = all
+    topStaked = clean(topStaked)
+    lastVideos = clean(lastVideos)
+    wordStaked = clean(wordStaked)
+
+    // For latest pool use date sort (never stake)
+    lastVideos = lastVideos
       .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
-      // Looser cutoff for suggestions (More to Watch can include older good content)
-      .filter((x: any) => x.ts > 1609459200)
-      .sort((x: any, y: any) => y.ts - x.ts)
-      .slice(0, 15)
-      .map((x: any) => x.c)
+      .sort((a: any, b: any) => b.ts - a.ts)
+      .map(x => x.c)
+
+    // Pick 5 from each (prefer top for stake pools)
+    const pick = (arr: any[], n: number) => arr.slice(0, n)
+    let mix: any[] = [
+      ...pick(topStaked, 5),
+      ...pick(lastVideos, 5),
+      ...pick(wordStaked, 5)
+    ]
+
+    // Final dedup + shuffle lightly for nice mix feel, limit 15
+    seen.clear()
+    mix = mix.filter((c: any) => {
+      const u = c.canonical_url || `lbry://${c.name}`
+      if (seen.has(u)) return false
+      seen.add(u)
+      return true
+    }).slice(0, 15)
+
+    // If we have less than desired due to overlap, pad with more from staked
+    if (mix.length < 12) {
+      const more = topStaked.filter((c: any) => !seen.has(c.canonical_url || `lbry://${c.name}`)).slice(0, 12 - mix.length)
+      mix = mix.concat(more)
+    }
 
     grid.innerHTML = ''
-    all.forEach((claim: any) => {
+    mix.forEach((claim: any) => {
       const value = claim.value || {}
       const thumb = value.thumbnail?.url || 'https://picsum.photos/id/1015/160/90'
       const title = value.title || claim.name || 'Untitled'
       const channel = claim.signing_channel?.name || '@unknown'
       const u = claim.canonical_url || `lbry://${claim.name}`
-      const timestamp = getClaimTimestamp(claim);
-      const uploaded = formatUploadTime(timestamp);
+      const timestamp = getClaimTimestamp(claim)
+      const uploaded = formatUploadTime(timestamp)
+      const fee = value.fee || value.stream?.fee || null
+      const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0)
+      const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : ''
+      const metaLine = isLocked ? `🔒 ${feeStr}` : `${channel}${uploaded ? ` • ${uploaded}` : ''}`
 
-      // Paywall
-      const fee = value.fee || value.stream?.fee || null;
-      const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0);
-      const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : '';
-
-      const metaLine = isLocked 
-        ? `🔒 ${feeStr}` 
-        : `${channel}${uploaded ? ` • ${uploaded}` : ''}`;
+      // show stake hint if high
+      const cAmt = parseFloat(claim.amount || 0)
+      const sAmt = parseFloat(claim.meta?.support_amount || 0)
+      let stk = cAmt + sAmt || parseFloat(claim.meta?.effective_amount || 0)
+      const stkLine = stk > 1000 ? `<div class="text-[9px] text-emerald-400">${Math.floor(stk).toLocaleString()} LBC</div>` : ''
 
       const card = document.createElement('div')
       card.className = 'small-card'
@@ -256,70 +444,326 @@ async function loadMoreToWatch(excludeUri: string) {
         <div class="meta">
           <div class="title">${title}</div>
           <div class="channel">${metaLine}</div>
+          ${stkLine}
         </div>
       `
       card.onclick = () => { showView('player'); loadVideo(u) }
       grid.appendChild(card)
     })
-  } catch {
+  } catch (e) {
+    console.warn('More to watch mix failed', e)
     grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Could not load suggestions.</div>`
   }
 }
 
-// ===== Feed & Latest =====
-async function loadFeed() {
+// ===== Feed (always highest LBC staked, supports page + load more on scroll + customize filters) =====
+async function loadFeed(replace = true) {
   const grid = document.getElementById('feed-grid')!
-  grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading feed…</div>`
+  const statusEl = document.getElementById('feed-more-status')!
+  if (replace) {
+    grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading top staked…</div>`
+    feedItems = []
+    feedPage = 1
+    feedHasMore = true
+  }
+  statusEl.textContent = ''
 
+  const myId = ++feedFetchId
   try {
-    // Feed = claims with the highest LBC support (effective_amount = base claim + deposited supports)
-    // We fetch with effective_amount and explicitly sort client-side descending to guarantee
-    // the highest-supported streams appear first (order_by direction can vary by backend).
-    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['effective_amount'], page_size: 25 })
-    let items = res.items || []
-    items.sort((a: any, b: any) => {
-      const ba = (b.meta?.effective_amount || 0)
-      const aa = (a.meta?.effective_amount || 0)
-      return ba - aa
+    let useCompanion = false
+    try {
+      const cfg: any = await chrome.storage.sync.get(['daemonUrl'])
+      if (String(cfg?.daemonUrl || '').includes('127.0.0.1') || String(cfg?.daemonUrl || '').includes('localhost')) useCompanion = true
+    } catch (_) {}
+    if (!useCompanion) {
+      try {
+        const st: any = await getDaemonStatus().catch(() => ({}))
+        const ep = String((st as any)?.endpoint || '')
+        if (st?.connected || st?.isCompanion || /127\.0\.0\.1|localhost/.test(ep)) useCompanion = true
+      } catch (_) {}
+    }
+
+    const params: any = {
+      claim_type: 'stream',
+      stream_types: ['video'],
+      has_source: true,
+      page: feedPage,
+      page_size: 30,
+      order_by: ['effective_amount'],   // ALWAYS stake order for Feed (highest first)
+    }
+    if (!useCompanion) {
+      params.fee_amount = '<=0'
+      params.not_tags = ['mature', 'nsfw']
+    }
+
+    const res = await searchLbryClaims(params)
+    let items = (res.items || [])
+    if (!useCompanion) {
+      items = items.filter((c: any) => {
+        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+        return !tags.some(t => t === 'mature' || t === 'nsfw')
+      })
+    }
+
+    // Client-side sort by staked (robustness for both daemon + public proxy)
+    items = items.sort((a: any, b: any) => {
+      const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+      const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+      return be - ae
     })
-    feedItems = items.slice(0, 20)
+
+    // Apply current customize filter (client side on the page results)
+    const now = Math.floor(Date.now() / 1000)
+    const day = 86400
+    items = items.filter((c: any) => {
+      const ts = getClaimTimestamp(c)
+      const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
+      if (currentFeedFilter === 'month') return ts > now - (30 * day)
+      if (currentFeedFilter === 'week') return ts > now - (7 * day)
+      if (currentFeedFilter === 'high') return stk >= 100000
+      if (currentFeedFilter === 'veryhigh') return stk >= 500000
+      return true
+    })
+
+    if (myId !== feedFetchId) return
+
+    if (replace) {
+      feedItems = items.slice(0, 20)
+    } else {
+      feedItems = dedupClaims(feedItems, items)
+    }
+
+    // Render
     renderClaimGrid(feedItems, grid)
-  } catch {
-    grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load.</div>`
+
+    // Update hasMore
+    feedHasMore = (res.items || []).length >= 25
+    statusEl.textContent = feedHasMore ? 'Scroll for more staked claims…' : 'End of feed results.'
+
+    // Wire customize buttons (once)
+    wireFeedFilters()
+    updateWordLibraryButton()
+    // Render side random words (left + right) - 60 words, current library, sticky
+    renderFeedSideWords()
+  } catch (e) {
+    if (myId === feedFetchId) {
+      grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load Feed.</div>`
+    }
   }
 }
 
-async function loadLatest() {
-  const grid = document.getElementById('latest-grid')!
-  grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading latest…</div>`
+function wireFeedFilters() {
+  const container = document.getElementById('feed-customize')
+  if (!container) return
+  container.querySelectorAll('.feed-filter-btn').forEach((btn: any) => {
+    btn.classList.toggle('active', btn.dataset.filter === currentFeedFilter)
+    if ((btn as any)._wired) return
+    ;(btn as any)._wired = true
+    btn.addEventListener('click', () => {
+      const f = (btn.dataset.filter || 'all') as any
+      if (f === currentFeedFilter) return
+      currentFeedFilter = f
+      // re-apply by reloading page 1 with filter
+      loadFeed(true)
+    })
+  })
+}
 
-  latestItems = []  // clear any previous to avoid stale data from prior sessions/configs
+function renderFeedSideWords() {
+  const left = document.getElementById('feed-left-words')
+  const right = document.getElementById('feed-right-words')
+  if (!left || !right) return
 
+  const wordsL = getRandomSearchWords(60, currentWordLibrary)
+  const wordsR = getRandomSearchWords(60, currentWordLibrary)
+
+  const make = (w: string) => {
+    const s = document.createElement('span')
+    s.className = 'feed-word'
+    s.textContent = w
+    s.onclick = () => {
+      showView('search')
+      setTimeout(() => {
+        const inp = document.getElementById('search-input') as HTMLInputElement | null
+        const g = document.getElementById('global-search') as HTMLInputElement | null
+        if (inp) { inp.value = w; inp.dispatchEvent(new Event('input', { bubbles: true })) }
+        if (g) g.value = ''
+      }, 30)
+    }
+    return s
+  }
+
+  left.innerHTML = ''
+  right.innerHTML = ''
+  wordsL.forEach(w => left.appendChild(make(w)))
+  wordsR.forEach(w => right.appendChild(make(w)))
+}
+
+function updateWordLibraryButton() {
+  const btn = document.getElementById('word-library-btn') as HTMLButtonElement | null
+  if (btn) {
+    const label = WORD_LIBRARY_LABELS[currentWordLibrary] || 'General'
+    btn.textContent = `📚 Word Library: ${label}`
+  }
+}
+
+function showWordLibrarySelector() {
+  // Remove any existing selector
+  document.querySelectorAll('.word-lib-selector').forEach(el => el.remove())
+
+  const container = document.createElement('div')
+  container.className = 'word-lib-selector'
+  container.style.cssText = `
+    position:absolute; z-index:9999; background:#111114; border:1px solid #27272a; 
+    border-radius:10px; padding:8px; font-size:11px; box-shadow:0 10px 15px -3px rgb(0 0 0 / 0.4);
+    max-width:240px; display:flex; flex-wrap:wrap; gap:4px;
+  `
+
+  const keys = Object.keys(WORD_LIBRARY_LABELS)
+
+  keys.forEach(key => {
+    const b = document.createElement('button')
+    b.className = 'action-btn text-xs px-2 py-0.5'
+    b.style.fontSize = '10px'
+    b.textContent = WORD_LIBRARY_LABELS[key]
+    if (key === currentWordLibrary) {
+      b.style.background = '#14b8a6'
+      b.style.borderColor = '#14b8a6'
+      b.style.color = 'white'
+    }
+    b.onclick = () => {
+      currentWordLibrary = key
+      chrome.storage.local.set({ revivel_word_library: key })
+      container.remove()
+      updateWordLibraryButton()
+      if (currentView === 'feed') {
+        renderFeedSideWords()
+      }
+    }
+    container.appendChild(b)
+  })
+
+  // Position near the button
+  const btn = document.getElementById('word-library-btn')
+  if (btn) {
+    const rect = btn.getBoundingClientRect()
+    container.style.top = (rect.bottom + window.scrollY + 4) + 'px'
+    container.style.left = (rect.left + window.scrollX) + 'px'
+  } else {
+    container.style.top = '120px'
+    container.style.left = '50%'
+    container.style.transform = 'translateX(-50%)'
+  }
+
+  document.body.appendChild(container)
+
+  // Click outside to close
+  setTimeout(() => {
+    document.addEventListener('click', function handler(ev) {
+      if (!container.contains(ev.target as Node)) {
+        container.remove()
+        document.removeEventListener('click', handler)
+      }
+    }, { once: true })
+  }, 10)
+}
+
+async function loadMoreFeed() {
+  if (!feedHasMore || isLoadingMoreFeed || currentView !== 'feed') return
+  isLoadingMoreFeed = true
+  const statusEl = document.getElementById('feed-more-status')!
+  statusEl.textContent = 'Loading more staked…'
+  feedPage += 1
   try {
-    // Use order_by release_time to get a recency-biased candidate set (this is the variant
-    // the public proxy responds to with recent items on top). We then heavily post-process
-    // with getClaimTimestamp (meta.creation_timestamp preferred + sanitization) to remove
-    // any claims that have bogus value.release_time (the cause of old "It's time" etc. videos
-    // appearing in Latest). Works the same whether on Companion daemon or public proxy.
-    const res = await searchLbryClaims({ claim_type: 'stream', order_by: ['release_time'], page_size: 50 })
-    let candidates = (res.items || [])
+    await loadFeed(false /* append */)
+  } finally {
+    isLoadingMoreFeed = false
+  }
+}
 
-    // Post-process with reliable timestamp (prefers meta.creation_timestamp, sanitizes bad release_time).
-    // This is the main fix for intermittent stale 2023-era videos (e.g. "It's time" with bogus value.release_time)
-    // appearing in Latest. We use a strict recent window for the dedicated Latest tab.
-    const nowSec = Math.floor(Date.now() / 1000)
-    const minLatestTs = nowSec - (86400 * 400) // ~13 months; keeps only truly recent for "Latest"
+// ===== Latest (NEVER stake sort; ONLY date sorted + real-time on newBlock + load more) =====
+async function loadLatest(replace = true) {
+  const grid = document.getElementById('latest-grid')!
+  const statusEl = document.getElementById('feed-more-status')! // reuse for simplicity (or could add separate)
+  if (replace) {
+    grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading latest…</div>`
+    latestItems = []
+    latestPage = 1
+    latestHasMore = true
+  }
+
+  const myId = ++latestFetchId
+  try {
+    let useCompanion = false
+    try {
+      const cfg: any = await chrome.storage.sync.get(['daemonUrl'])
+      if (String(cfg?.daemonUrl || '').includes('127.0.0.1') || String(cfg?.daemonUrl || '').includes('localhost')) useCompanion = true
+    } catch (_) {}
+    if (!useCompanion) {
+      try {
+        const st: any = await getDaemonStatus().catch(() => ({}))
+        const ep = String((st as any)?.endpoint || '')
+        if (st?.connected || st?.isCompanion || /127\.0\.0\.1|localhost/.test(ep)) useCompanion = true
+      } catch (_) {}
+    }
+
+    const params: any = {
+      claim_type: 'stream',
+      stream_types: ['video'],
+      has_source: true,
+      page: latestPage,
+      page_size: 40,
+      order_by: ['release_time'],   // time order from server
+    }
+    if (!useCompanion) {
+      params.fee_amount = '<=0'
+      params.not_tags = ['mature', 'nsfw']
+    }
+
+    const res = await searchLbryClaims(params)
+    let candidates = (res.items || [])
+    if (!useCompanion) {
+      candidates = candidates.filter((c: any) => {
+        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+        return !tags.some(t => t === 'mature' || t === 'nsfw')
+      })
+    }
+
+    // STRICT: only date sort. Never touch stake ordering for Latest.
+    // Use reliable timestamp, drop obvious garbage.
     candidates = candidates
       .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
-      .filter((x: any) => x.ts > minLatestTs)
+      .filter((x: any) => x.ts > 0)
       .sort((x: any, y: any) => y.ts - x.ts)
-      .slice(0, 20)
-      .map((x: any) => x.c)
+      .map(x => x.c)
 
-    latestItems = candidates
+    if (myId !== latestFetchId) return
+
+    if (replace) {
+      latestItems = candidates.slice(0, 20)
+    } else {
+      latestItems = dedupClaims(latestItems, candidates)
+    }
+
     renderClaimGrid(latestItems, grid)
+
+    latestHasMore = (res.items || []).length >= 35
+    // no dedicated status element in latest view; scroll hint is implicit
   } catch {
-    grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load.</div>`
+    if (myId === latestFetchId) {
+      grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load Latest.</div>`
+    }
+  }
+}
+
+async function loadMoreLatest() {
+  if (!latestHasMore || isLoadingMoreLatest || currentView !== 'latest') return
+  isLoadingMoreLatest = true
+  latestPage += 1
+  try {
+    await loadLatest(false)
+  } finally {
+    isLoadingMoreLatest = false
   }
 }
 
@@ -393,7 +837,7 @@ function renderClaimGrid(items: any[], container: HTMLElement) {
   })
 }
 
-// ===== Search =====
+// ===== Search (ALWAYS sorted by LBC staked + top 20 + load more on scroll) =====
 function setupSearch() {
   const input = document.getElementById('search-input') as HTMLInputElement
   const global = document.getElementById('global-search') as HTMLInputElement
@@ -401,19 +845,82 @@ function setupSearch() {
   const statusEl = document.getElementById('search-status')!
 
   let t: any
-  const run = async (q: string) => {
-    if (!q || q.length < 2) { grid.innerHTML = ''; statusEl.textContent = 'Enter 2+ characters'; return }
-    statusEl.textContent = 'Searching…'
-    grid.innerHTML = ''
+  const run = async (q: string, replace = true) => {
+    if (!q || q.length < 2) {
+      if (replace) { grid.innerHTML = ''; statusEl.textContent = 'Enter 2+ characters' }
+      return
+    }
+    if (replace) {
+      statusEl.textContent = 'Searching (by LBC staked)…'
+      grid.innerHTML = ''
+      searchItems = []
+      searchPage = 1
+      searchHasMore = true
+    }
+    const myId = ++searchFetchId
     try {
-      const res = await searchLbryClaims({ text: q, claim_type: 'stream', page_size: 18 })
-      const items = res.items || []
-      statusEl.textContent = `${items.length} results`
-      renderClaimGrid(items, grid)
-    } catch { statusEl.textContent = 'Search error' }
+      // ALWAYS stake sorted for Search tab (per spec), public filters only if no daemon
+      let useCompanion = false
+      try {
+        const cfg: any = await chrome.storage.sync.get(['daemonUrl'])
+        if (String(cfg?.daemonUrl || '').includes('127.0.0.1') || String(cfg?.daemonUrl || '').includes('localhost')) useCompanion = true
+      } catch (_) {}
+      if (!useCompanion) {
+        try {
+          const st: any = await getDaemonStatus().catch(() => ({}))
+          const ep = String((st as any)?.endpoint || '')
+          if (st?.connected || st?.isCompanion || /127\.0\.0\.1|localhost/.test(ep)) useCompanion = true
+        } catch (_) {}
+      }
+
+      const sparams: any = {
+        text: q,
+        claim_type: 'stream',
+        stream_types: ['video'],
+        has_source: true,
+        page: searchPage,
+        page_size: 30,
+        order_by: ['effective_amount'],   // ALWAYS staked for Search
+      }
+      if (!useCompanion) {
+        sparams.fee_amount = '<=0'
+        sparams.not_tags = ['mature', 'nsfw']
+      }
+
+      const res = await searchLbryClaims(sparams)
+      let items = res.items || []
+      if (!useCompanion) {
+        items = items.filter((c: any) => {
+          const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+          return !tags.some(t => t === 'mature' || t === 'nsfw')
+        })
+      }
+
+      // Ensure client sort by stake
+      items = items.sort((a: any, b: any) => {
+        const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+        const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+        return be - ae
+      })
+
+      if (myId !== searchFetchId) return
+
+      if (replace) {
+        searchItems = items.slice(0, 20)
+      } else {
+        searchItems = dedupClaims(searchItems, items)
+      }
+
+      statusEl.textContent = `${searchItems.length} results (staked order)`
+      renderClaimGrid(searchItems, grid)
+
+      searchHasMore = (res.items || []).length >= 25
+    } catch {
+      if (replace) statusEl.textContent = 'Search error'
+    }
   }
 
-  input.oninput = () => { clearTimeout(t); t = setTimeout(() => run(input.value.trim()), 280) }
+  input.oninput = () => { clearTimeout(t); t = setTimeout(() => run(input.value.trim(), true), 280) }
 
   global.onkeydown = (e) => {
     if (e.key === 'Enter') {
@@ -421,9 +928,27 @@ function setupSearch() {
       if (v.startsWith('lbry://')) { showView('player'); loadVideo(v); global.value = ''; return }
       showView('search')
       input.value = v
-      setTimeout(() => run(v), 40)
+      setTimeout(() => run(v, true), 40)
       global.value = ''
     }
+  }
+
+  // expose for external trigger
+  ;(window as any).__revivelRunSearch = run
+}
+
+async function loadMoreSearch() {
+  if (!searchHasMore || isLoadingMoreSearch || currentView !== 'search') return
+  const inp = document.getElementById('search-input') as HTMLInputElement | null
+  const q = (inp && inp.value.trim()) || ''
+  if (!q) return
+  isLoadingMoreSearch = true
+  searchPage += 1
+  try {
+    const run = (window as any).__revivelRunSearch
+    if (run) await run(q, false)
+  } finally {
+    isLoadingMoreSearch = false
   }
 }
 
@@ -477,28 +1002,36 @@ async function loadLibrary() {
 
 async function resetViewData() {
   // Clear in-memory caches for this player instance (eliminates any prior merge/stale lists)
-  feedItems = [];
-  latestItems = [];
-  vault = [];
-  history = [];
+  feedItems = []
+  latestItems = []
+  searchItems = []
+  feedFetchId++
+  latestFetchId++
+  searchFetchId++
+  feedPage = 1
+  latestPage = 1
+  searchPage = 1
+  feedHasMore = true
+  latestHasMore = true
+  searchHasMore = true
+  vault = []
+  history = []
 
   // Clear persistent storage for vault and history (shared with popup)
-  await chrome.storage.local.remove(['revivel_vault', 'revivel_history']);
+  await chrome.storage.local.remove(['revivel_vault', 'revivel_history'])
 
   // Always force fresh fetches for dynamic lists so Latest/Feed grids are updated
-  // even if you are currently on Player or Settings view. This ensures reset actually
-  // purges stale latest from earlier extension builds/configs.
-  await loadFeed();
-  await loadLatest();
+  await loadFeed()
+  await loadLatest(true)
 
   if (currentView === 'library') {
-    await loadLibrary();
+    await loadLibrary()
   } else if (currentView === 'wallet') {
-    renderWallet();
+    renderWallet()
   }
 
   // Notify popup side indirectly via storage clear (next open will be fresh)
-  alert('View data and caches have been reset (fresh Latest/Feed fetched).\n\nIf you still see old items, fully reload the extension at chrome://extensions then reload this page.');
+  alert('View data and caches have been reset (fresh Latest/Feed fetched).\n\nIf you still see old items, fully reload the extension at chrome://extensions then reload this page.')
 }
 
 function renderWallet() {
@@ -751,13 +1284,61 @@ async function init() {
   await loadVault()
   await loadHistory()
 
-  // Explicit clear on every full page load (in case of any module-level retention or prior bundle)
+  // Explicit clear on every full page load
   feedItems = []
   latestItems = []
+  searchItems = []
+  feedFetchId++
+  latestFetchId++
+  searchFetchId++
+  feedPage = 1
+  latestPage = 1
+  searchPage = 1
+  feedHasMore = true
+  latestHasMore = true
 
   await loadVideo(currentUri)
-  loadFeed(); loadLatest()
+
+  // Load saved word library preference
+  try {
+    const saved: any = await new Promise(r => chrome.storage.local.get('revivel_word_library', r))
+    if (saved?.revivel_word_library && WORD_LIBRARY_LABELS[saved.revivel_word_library]) {
+      currentWordLibrary = saved.revivel_word_library
+    }
+  } catch (_) {}
+
+  // Wire Word Library button (appears in Feed view)
+  const wordLibBtn = document.getElementById('word-library-btn')
+  if (wordLibBtn) {
+    wordLibBtn.addEventListener('click', (e) => {
+      e.stopImmediatePropagation()
+      showWordLibrarySelector()
+    })
+  }
+  updateWordLibraryButton()
+
+  // Initial loads (Feed stake sorted, Latest date only)
+  loadFeed()
+  loadLatest(true)
   showView('player')
+
+  // Infinite scroll for load-more on Feed / Latest / Search (player)
+  let scrollTimer: any = null
+  window.addEventListener('scroll', () => {
+    if (scrollTimer) clearTimeout(scrollTimer)
+    scrollTimer = setTimeout(() => {
+      const nearBottom = window.innerHeight + window.scrollY > (document.body.scrollHeight - 280)
+      if (!nearBottom) return
+      if (currentView === 'feed') loadMoreFeed()
+      else if (currentView === 'latest') loadMoreLatest()
+      else if (currentView === 'search') loadMoreSearch()
+    }, 120)
+  }, { passive: true })
+
+  // Poll status so activating Companion later refreshes feed/latest with the right data (support ordering etc.)
+  setInterval(() => {
+    updateStatus().catch(() => {})
+  }, 8000)
 }
 
 init()

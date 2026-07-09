@@ -448,6 +448,45 @@
     .overflow-auto { overflow: auto; }
     .break-all { word-break: break-all; }
     .max-h-48 { max-height: 12rem; }
+
+    /* Feed side words + customize */
+    .feed-words { 
+      font-size: 9px; 
+      color: #94a3b8; 
+      max-width: 90px;
+      width: 90px;
+      position: sticky;
+      top: 78px;
+      align-self: flex-start;
+      overflow-y: auto;
+      max-height: 78vh;
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 8px;
+      padding: 5px;
+    }
+    .feed-word {
+      display: inline-block;
+      margin: 1px 2px;
+      padding: 1px 4px;
+      border: 1px solid #334155;
+      border-radius: 9999px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.1s ease;
+      font-size: 8.5px;
+    }
+    .feed-word:hover {
+      background: #14b8a6;
+      color: white;
+      border-color: #14b8a6;
+    }
+    .feed-filter-btn.active {
+      background: #14b8a6;
+      border-color: #14b8a6;
+      color: white;
+    }
+    .feed-layout { min-height: 300px; }
   </style>
 </head>
 <body class="bg-[#0a0a0f] text-[#e2e8f0]">
@@ -526,11 +565,35 @@
 
     <!-- ============ FEED VIEW ============ -->
     <div id="view-feed" class="view">
-      <div class="mb-6">
+      <div class="mb-4">
         <div class="text-[28px] font-semibold tracking-[-0.4px]">Feed</div>
         <div class="text-sm text-[#64748b]">Highest LBC support (most deposited into claims)</div>
       </div>
-      <div id="feed-grid" class="content-grid"></div>
+
+      <!-- Customize feed controls + Word Library selector -->
+      <div id="feed-customize" class="mb-3 flex flex-wrap gap-2 items-center">
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="all">All Time</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="month">This Month</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="week">This Week</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="high">> 100k LBC</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="veryhigh">> 500k LBC</button>
+        <button id="word-library-btn" class="action-btn text-xs px-3 py-1">📚 Word Library: General</button>
+      </div>
+
+      <!-- Flex container: left words | main feed grid | right words -->
+      <div class="feed-layout flex gap-3" style="align-items:flex-start;">
+        <!-- Left random words (click to search) - fixed/sticky, 90px -->
+        <div id="feed-left-words" class="feed-words shrink-0"></div>
+
+        <!-- Main claims grid -->
+        <div class="flex-1 min-w-0">
+          <div id="feed-grid" class="content-grid"></div>
+          <div id="feed-more-status" class="text-[10px] text-[#64748b] mt-2 text-center"></div>
+        </div>
+
+        <!-- Right random words - fixed/sticky, 90px -->
+        <div id="feed-right-words" class="feed-words shrink-0"></div>
+      </div>
     </div>
 
     <!-- ============ LATEST VIEW ============ -->

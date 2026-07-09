@@ -8,6 +8,9 @@ const title = params.get('title') || '';
 const startTime = parseFloat(params.get('startTime') || '0');
 const isStandalone = params.get('standalone') === '1';
 
+let acquireAttempts = 0;
+const MAX_ACQUIRE_ATTEMPTS = 3;
+
 const video = document.getElementById('v') as HTMLVideoElement | null;
 const foot = document.getElementById('foot')!;
 const standaloneHeader = document.getElementById('standalone-header') as HTMLDivElement | null;
@@ -47,54 +50,101 @@ if (isStandalone && standaloneHeader) {
 
 function setVideoSrc(src: string) {
   if (!video) return;
+
+  // For public mode, the direct URLs (v6 or free) often 401 or fail; go straight to embed
+  if (src && (src.includes('odycdn.com') || src.includes('odysee.com'))) {
+    loadPublicEmbed();
+    return;
+  }
+
   // Clean any previous error state
   const parent = video.parentElement;
   if (parent) {
     parent.querySelectorAll('.no-stream').forEach(n => n.remove());
   }
   video.style.display = 'block';
-  video.src = src;
-  video.load();
+  video.style.width = '100%';
+  video.style.height = '100%';
+  video.style.objectFit = 'contain';
+  video.style.maxWidth = '100%';
+  video.style.maxHeight = '100%';
+  video.style.boxSizing = 'border-box';
 
-  const doPlay = () => {
-    video.muted = false;
-    video.play().catch((err) => {
-      // Autoplay blocked by browser policy (no recent user gesture in this context).
-      // Do NOT force mute. Show a play overlay so user can start with one click (unmuted).
-      console.debug('Autoplay blocked:', err?.name || err);
-      showPlayOverlay();
-    });
+  const isLikelyHls = src.includes('.m3u8') || src.includes('/streams/') || src.includes('odycdn.com');
+
+  const startPlayback = () => {
+    const doPlay = (tryMuted = false) => {
+      video.muted = tryMuted;
+      video.play().catch((err) => {
+        if (!tryMuted) {
+          console.debug('Unmuted autoplay blocked, trying muted:', err?.name || err);
+          doPlay(true);
+        } else {
+          console.debug('Autoplay blocked even muted:', err?.name || err);
+          showPlayOverlay();
+        }
+      });
+    };
+
+    if (startTime > 0) {
+      const seekAndPlay = () => {
+        try { video.currentTime = startTime; } catch (_) {}
+        const onSeeked = () => doPlay();
+        video.addEventListener('seeked', onSeeked, { once: true });
+        setTimeout(() => {
+          if (Math.abs(video.currentTime - startTime) < 1) doPlay();
+        }, 150);
+      };
+      video.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+      if (video.readyState >= 1) seekAndPlay();
+    } else {
+      const playOnLoad = () => doPlay();
+      video.addEventListener('loadedmetadata', playOnLoad, { once: true });
+      if (video.readyState >= 1) doPlay();
+    }
   };
 
-  if (startTime > 0) {
-    const seekAndPlay = () => {
-      try {
-        video.currentTime = startTime;
-      } catch (_) {}
-      // Wait for the seek to complete before playing to ensure we start at the exact position
-      const onSeeked = () => {
-        doPlay();
-      };
-      video.addEventListener('seeked', onSeeked, { once: true });
-      // Fallback in case 'seeked' doesn't fire promptly (e.g. already at position)
-      setTimeout(() => {
-        if (Math.abs(video.currentTime - startTime) < 1) {
-          doPlay();
-        }
-      }, 150);
+  // Error recovery with limit
+  video.onerror = () => {
+    console.warn('Video failed to load/play src:', src);
+    if (uri && acquireAttempts < MAX_ACQUIRE_ATTEMPTS) {
+      streamUrl = '';
+      setTimeout(() => tryAcquireStream(), 300);
+    } else {
+      showNoStream();
+    }
+  };
+
+  if (isLikelyHls && typeof (window as any).Hls === 'undefined') {
+    // Load hls.js dynamically for public mode HLS streams
+    const script = document.createElement('script');
+    script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+    script.onload = () => initHlsOrDirect(src, startPlayback);
+    script.onerror = () => {
+      // Fallback direct (may not play HLS)
+      video.src = src;
+      video.load();
+      startPlayback();
     };
-    video.addEventListener('loadedmetadata', seekAndPlay, { once: true });
-    // Fallback if metadata already loaded
-    if (video.readyState >= 1) {
-      seekAndPlay();
-    }
+    document.head.appendChild(script);
   } else {
-    // No seek needed, play immediately after load
-    const playOnLoad = () => doPlay();
-    video.addEventListener('loadedmetadata', playOnLoad, { once: true });
-    if (video.readyState >= 1) {
-      doPlay();
-    }
+    initHlsOrDirect(src, startPlayback);
+  }
+}
+
+function initHlsOrDirect(src: string, startPlayback: () => void) {
+  if (!video) return;
+  const isHls = src.includes('.m3u8') || src.includes('/streams/') || src.includes('odycdn.com');
+  if (isHls && (window as any).Hls && (window as any).Hls.isSupported()) {
+    const hls = new (window as any).Hls({ enableWorker: false, lowLatencyMode: true });
+    hls.loadSource(src);
+    hls.attachMedia(video);
+    hls.on((window as any).Hls.Events.MANIFEST_PARSED, startPlayback);
+    (video as any)._hls = hls;
+  } else {
+    video.src = src;
+    video.load();
+    startPlayback();
   }
 }
 
@@ -106,7 +156,7 @@ function showNoStream() {
   parent.querySelectorAll('.no-stream').forEach(n => n.remove());
   const msg = document.createElement('div');
   msg.className = 'no-stream';
-  msg.innerHTML = 'No playable stream.<br>Make sure the ReviveL Companion is running.';
+  msg.innerHTML = 'No playable stream found in public mode.<br>Some videos require the ReviveL Companion.';
   parent.appendChild(msg);
 }
 
@@ -163,13 +213,22 @@ function showPlayOverlay() {
 }
 
 async function tryAcquireStream() {
-  if (!uri || !('chrome' in window) || !chrome.runtime) return;
+  if (!uri || !('chrome' in window) || !chrome.runtime) {
+    if (!streamUrl) loadPublicEmbed();
+    return;
+  }
 
   try {
     const resp: any = await new Promise(r => chrome.runtime.sendMessage({ type: 'streamGet', uri }, r));
     if (resp && resp.ok) {
       const g = resp.result;
-      const got = g?.streaming_url || g?.file?.streaming_url || g?.stream?.streaming_url || (g?.value && g.value.streaming_url) || null;
+      // Dig for streaming_url in various possible shapes (daemon vs public proxy responses)
+      const got = g?.streaming_url || 
+                  g?.file?.streaming_url || 
+                  g?.stream?.streaming_url || 
+                  (g?.value && g.value.streaming_url) ||
+                  g?.result?.streaming_url ||
+                  null;
       if (got) {
         streamUrl = got;
         setVideoSrc(streamUrl);
@@ -179,8 +238,65 @@ async function tryAcquireStream() {
   } catch (e) {
     // ignore
   }
-  // If we get here with no url, show placeholder
-  if (!streamUrl) showNoStream();
+
+  // If streamGet didn't give a URL, try one more fresh
+  if (!streamUrl) {
+    try {
+      const resp2: any = await new Promise(r => chrome.runtime.sendMessage({ type: 'streamGet', uri }, r));
+      if (resp2 && resp2.ok) {
+        const g2 = resp2.result;
+        const got2 = g2?.streaming_url || 
+                     g2?.file?.streaming_url || 
+                     g2?.stream?.streaming_url || 
+                     (g2?.value && g2.value.streaming_url) ||
+                     g2?.result?.streaming_url ||
+                     null;
+        if (got2) {
+          streamUrl = got2;
+          setVideoSrc(streamUrl);
+          return;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // If streamGet didn't give usable URL (common in public mode), fallback to Odysee embed
+  if (!streamUrl) {
+    loadPublicEmbed();
+  }
+}
+
+async function loadPublicEmbed() {
+  if (!video || !uri) {
+    showNoStream();
+    return;
+  }
+  try {
+    const resolveResp: any = await new Promise(r => chrome.runtime.sendMessage({ type: 'resolve', uri }, r));
+    if (resolveResp && resolveResp.ok) {
+      const result = resolveResp.result;
+      const claim = result && (result[uri] || Object.values(result)[0]);
+      const v = claim?.value || {};
+      const name = claim?.name || claim?.normalized_name || v.normalized_name;
+      const claimId = claim?.claim_id || v.claim_id;
+      if (name && claimId) {
+        const embedUrl = `https://odysee.com/$/embed/${encodeURIComponent(name)}/${claimId}`;
+        // Replace video with embed iframe sized to container
+        const parent = video.parentElement;
+        if (parent && video && video.parentNode === parent) {
+          parent.querySelectorAll('.no-stream').forEach(n => n.remove());
+          const iframe = document.createElement('iframe');
+          iframe.src = embedUrl;
+          iframe.style.cssText = 'width:100%; height:100%; border:0; background:#000; flex:1; min-height:0;';
+          iframe.allow = 'fullscreen; autoplay';
+          iframe.setAttribute('allowfullscreen', 'true');
+          parent.replaceChild(iframe, video);
+        }
+        return;
+      }
+    }
+  } catch (_) {}
+  showNoStream();
 }
 
 if (streamUrl) {
@@ -191,6 +307,15 @@ if (streamUrl) {
 } else {
   showNoStream();
 }
+
+// Help public/floating autoplay: on any interaction with the player, unmute if muted
+const unMuteOnInteract = () => {
+  if (video && video.muted) {
+    video.muted = false;
+  }
+};
+video?.addEventListener('click', unMuteOnInteract, { once: true });
+document.getElementById('wrap')?.addEventListener('click', unMuteOnInteract, { once: true });
 
 // Report playback position periodically so background can follow tabs
 if (video) {

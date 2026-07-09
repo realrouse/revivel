@@ -1,13 +1,26 @@
 // ReviveL Popup — Premium UX
 // Large comfortable window, elegant spacing, in-popup settings, floating video player
 
-import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed, getClaimTimestamp } from '../utils/lbryApi.js';
+import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed, getClaimTimestamp, dedupClaims } from '../utils/lbryApi.js';
 
 interface LbryItem { id: string; title: string; channel: string; thumbnail: string; duration: string; lbryUri: string; type: 'video'|'image'; timestamp: number; uploaded: string; isLocked: boolean; fee: string; staked: number; }
 interface VaultItem { id: string; title: string; description: string; imageData: string; lbryUri: string; channel: string; date: string }
 
 let feedItems: LbryItem[] = []
 let latestItems: LbryItem[] = []
+
+// Pagination state (Feed = staked order; Latest = date order only)
+let feedPage = 1
+let latestPage = 1
+let feedHasMore = true
+let latestHasMore = true
+let isLoadingMoreFeed = false
+let isLoadingMoreLatest = false
+
+// Fetch IDs prevent stale results from older fetches (e.g. public trending results arriving
+// after a Companion activation fetch, or interleaved calls) from polluting the lists.
+let feedFetchId = 0
+let latestFetchId = 0
 
 let currentTab: 'feed'|'new'|'vault'|'wallet' = 'feed'
 let searchTerm = ''
@@ -19,6 +32,8 @@ let feedLoading = true;
 let latestLoading = true;
 let feedHasError = false;
 let latestHasError = false;
+let feedErrorIsCompanion = false;
+let latestErrorIsCompanion = false;
 
 function formatUploadTime(timestamp: number): string {
   if (!timestamp) return '';
@@ -84,87 +99,162 @@ function mapClaimToItem(claim: any): LbryItem {
   }
 }
 
-async function fetchRealFeed(tab: 'feed' | 'latest') {
+async function fetchRealFeed(tab: 'feed' | 'latest', page = 1, append = false) {
   const isFeed = tab === 'feed';
-  const currentItems = isFeed ? feedItems : latestItems;
-  const hasData = currentItems.length > 0;
+  const myId = isFeed ? ++feedFetchId : ++latestFetchId;
 
-  if (isFeed) {
-    feedHasError = false;
-    if (!hasData) {
+  if (!append) {
+    if (isFeed) {
+      feedItems = [];
+      feedPage = 1;
+      feedHasMore = true;
+      feedHasError = false;
+      feedErrorIsCompanion = false;
       feedLoading = true;
       renderContent();
-    }
-  } else {
-    latestHasError = false;
-    if (!hasData) {
+    } else {
+      latestItems = [];
+      latestPage = 1;
+      latestHasMore = true;
+      latestHasError = false;
+      latestErrorIsCompanion = false;
       latestLoading = true;
       renderContent();
     }
   }
 
-  // Check status for flag (but always attempt search via proxy if needed)
+  // Mode detection (prefer daemonUrl)
+  let useCompanionLists = false;
   try {
-    const daemonStatus = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
-    noDaemonConnection = !daemonStatus?.connected;
-  } catch (_) {
-    noDaemonConnection = true;
+    const cfg: any = await chrome.storage.sync.get(['daemonUrl']);
+    const du = String(cfg?.daemonUrl || '');
+    if (du.includes('127.0.0.1') || du.includes('localhost')) useCompanionLists = true;
+  } catch (_) {}
+  if (!useCompanionLists) {
+    try {
+      const daemonStatus = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
+      noDaemonConnection = !daemonStatus?.connected;
+      const usingDaemon = (daemonStatus as any)?.using === 'daemon' || (daemonStatus as any)?.isCompanion;
+      const ep = String((daemonStatus as any)?.endpoint || '');
+      if (usingDaemon || /127\.0\.0\.1|localhost/.test(ep) || daemonStatus?.connected) {
+        useCompanionLists = true;
+      }
+    } catch (_) {
+      noDaemonConnection = true;
+    }
   }
+
+  const fetchMode = useCompanionLists ? 'companion' : 'public';
 
   try {
     const params: any = {
       claim_type: 'stream',
-      page_size: 20,
-      page: 1,
-    }
+      stream_types: ['video'],
+      has_source: true,
+      page_size: 25,
+      page,
+    };
+
     if (tab === 'feed') {
-      // Feed = highest LBC support (effective_amount includes deposited supports).
-      // Sort client-side for reliability (same as player).
-      params.order_by = ['effective_amount']
+      // FEED: ALWAYS highest LBC staked (effective_amount). Never mix latest ordering.
+      params.order_by = ['effective_amount'];
+      if (!useCompanionLists) {
+        params.fee_amount = '<=0';
+        params.not_tags = ['mature', 'nsfw'];
+      }
     } else {
-      // release_time to bias toward recent (proxy returns recent items); client-side
-      // getClaimTimestamp + filter removes any polluted by bad release_time values
-      params.order_by = ['release_time']
+      // LATEST: ONLY date. NEVER stake sort. Real-time via newBlock.
+      params.order_by = ['release_time'];
+      if (!useCompanionLists) {
+        params.fee_amount = '<=0';
+        params.not_tags = ['mature', 'nsfw'];
+      }
     }
+
     const result = await searchLbryClaims(params)
-    let rawItems = (result.items || [])
-    if (tab === 'feed') {
-      rawItems = rawItems.sort((a: any, b: any) => {
-        const be = (b.meta?.effective_amount || 0)
-        const ae = (a.meta?.effective_amount || 0)
-        return be - ae
-      })
+    let rawItems = (result.items || []);
+    if (!useCompanionLists) {
+      rawItems = rawItems.filter((c: any) => {
+        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+        return !tags.some((t: string) => t === 'mature' || t === 'nsfw');
+      });
     }
+
     let items = rawItems.map(mapClaimToItem)
-    if (tab === 'latest' || !isFeed) {
-      // Strict recent filter + sort by reliable timestamp (getClaimTimestamp prefers meta.creation_timestamp).
-      // Drops stale items that polluted server results due to bad value.release_time.
-      const nowSec = Math.floor(Date.now() / 1000)
-      const minLatestTs = nowSec - (86400 * 400)
-      items = items.filter((it: any) => it.timestamp > minLatestTs)
-        .sort((a, b) => b.timestamp - a.timestamp)
-    }
+
     if (tab === 'feed') {
-      feedItems = items
+      // Enforce stake sort for Feed (top first)
+      items = items.sort((a, b) => (b.staked || 0) - (a.staked || 0))
     } else {
-      latestItems = items
+      // Enforce date sort only for Latest
+      const nowSec = Math.floor(Date.now() / 1000)
+      // Stricter recent window for "Latest" feel (load more can surface older)
+      const minLatestTs = nowSec - (86400 * 90)
+      items = items
+        .filter((it: any) => it.timestamp > minLatestTs)
+        .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
+    }
+
+    // Stale fetch guard
+    const stillCurrentId = (isFeed ? myId === feedFetchId : myId === latestFetchId);
+    if (!stillCurrentId) return;
+
+    // Mode guard at end
+    try {
+      let freshUse = false;
+      try {
+        const cfg: any = await chrome.storage.sync.get(['daemonUrl']).catch(() => ({}));
+        const du = String(cfg?.daemonUrl || '');
+        if (du.includes('127.0.0.1') || du.includes('localhost')) freshUse = true;
+      } catch (_) {}
+      if (!freshUse) {
+        const fresh = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
+        const usingD = (fresh as any)?.using === 'daemon' || (fresh as any)?.isCompanion;
+        const ep = String((fresh as any)?.endpoint || '');
+        if (usingD || /127\.0\.0\.1|localhost/.test(ep) || fresh?.connected) freshUse = true;
+      }
+      if ((freshUse ? 'companion' : 'public') !== fetchMode) return;
+    } catch (_) {}
+
+    if (tab === 'feed') {
+      if (append) {
+        feedItems = dedupClaims(feedItems as any, items as any) as LbryItem[]
+      } else {
+        feedItems = items as LbryItem[]
+      }
+      feedHasMore = rawItems.length >= 20
+      feedPage = page
+    } else {
+      if (append) {
+        latestItems = dedupClaims(latestItems as any, items as any) as LbryItem[]
+      } else {
+        latestItems = items as LbryItem[]
+      }
+      latestHasMore = rawItems.length >= 20
+      latestPage = page
     }
   } catch (e) {
     console.warn('Real feed fetch failed', e)
-    if (tab === 'feed') {
-      feedItems = [];
-      feedHasError = true;
-    } else {
-      latestItems = [];
-      latestHasError = true;
+    const stillCurrent = (isFeed ? myId === feedFetchId : myId === latestFetchId);
+    if (stillCurrent) {
+      if (tab === 'feed') {
+        if (!append) feedItems = [];
+        feedHasError = true;
+        feedErrorIsCompanion = useCompanionLists;
+      } else {
+        if (!append) latestItems = [];
+        latestHasError = true;
+        latestErrorIsCompanion = useCompanionLists;
+      }
     }
   } finally {
+    const stillCurrent = (isFeed ? myId === feedFetchId : myId === latestFetchId);
     if (tab === 'feed') {
       feedLoading = false;
     } else {
       latestLoading = false;
     }
-    const shouldRenderCurrent = !searchTerm &&
+    const shouldRenderCurrent = stillCurrent && !searchTerm &&
       ((tab === 'feed' && currentTab === 'feed') || (tab === 'latest' && currentTab === 'new'));
     if (shouldRenderCurrent) {
       renderContent();
@@ -172,30 +262,46 @@ async function fetchRealFeed(tab: 'feed' | 'latest') {
   }
 }
 
-async function performRealSearch(query: string) {
-  // Check connection
+async function loadMoreFeedPopup() {
+  if (isLoadingMoreFeed || !feedHasMore || currentTab !== 'feed' || searchTerm) return
+  isLoadingMoreFeed = true
+  feedPage += 1
   try {
-    const daemonStatus = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
-    if (!daemonStatus?.connected) {
+    await fetchRealFeed('feed', feedPage, true)
+  } finally {
+    isLoadingMoreFeed = false
+  }
+}
+
+async function loadMoreLatestPopup() {
+  if (isLoadingMoreLatest || !latestHasMore || currentTab !== 'new' || searchTerm) return
+  isLoadingMoreLatest = true
+  latestPage += 1
+  try {
+    await fetchRealFeed('latest', latestPage, true)
+  } finally {
+    isLoadingMoreLatest = false
+  }
+}
+
+async function performRealSearch(query: string) {
+  // Determine mode (search supported in both public and companion, with appropriate filters)
+  let useCompanionLists = false;
+  try {
+    const cfg: any = await chrome.storage.sync.get(['daemonUrl']);
+    const du = String(cfg?.daemonUrl || '');
+    if (du.includes('127.0.0.1') || du.includes('localhost')) useCompanionLists = true;
+  } catch (_) {}
+  if (!useCompanionLists) {
+    try {
+      const daemonStatus = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
+      const usingD = (daemonStatus as any)?.using === 'daemon' || (daemonStatus as any)?.isCompanion;
+      const ep = String((daemonStatus as any)?.endpoint || '');
+      if (usingD || /127\.0\.0\.1|localhost/.test(ep) || daemonStatus?.connected) useCompanionLists = true;
+      noDaemonConnection = !daemonStatus?.connected;
+    } catch (_) {
       noDaemonConnection = true;
-      if (currentTab === 'feed') feedItems = [];
-      else latestItems = [];
-      renderContent();
-      return;
     }
-  } catch (_) {
-    noDaemonConnection = true;
-    if (currentTab === 'feed') {
-      feedItems = [];
-      feedHasError = true;
-      feedLoading = false;
-    } else {
-      latestItems = [];
-      latestHasError = true;
-      latestLoading = false;
-    }
-    renderContent();
-    return;
   }
 
   if (!query || query.length < 2) {
@@ -213,18 +319,41 @@ async function performRealSearch(query: string) {
   stopLoadingAnimation();
 
   try {
-    noDaemonConnection = false;
+    // Search (in popup context) for the current view: always prefer stake sort for Feed/Search-like,
+    // but for Latest tab view keep date order.
     const params: any = {
       text: query,
       claim_type: 'stream',
+      stream_types: ['video'],
+      has_source: true,
       page_size: 10,
       page: 1,
-      order_by: ['effective_amount']
+    };
+    // Always stake order unless the active view is the Latest tab
+    const wantStake = (currentTab !== 'new')
+    if (wantStake) {
+      params.order_by = ['effective_amount']
+    } else {
+      params.order_by = ['release_time']
+    }
+    if (!useCompanionLists) {
+      params.fee_amount = '<=0';
+      params.not_tags = ['mature', 'nsfw'];
     }
     const result = await searchLbryClaims(params)
-    let items = (result.items || []).map(mapClaimToItem)
+    let raw = (result.items || []);
+    if (!useCompanionLists) {
+      raw = raw.filter((c: any) => {
+        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+        return !tags.some((t: string) => t === 'mature' || t === 'nsfw');
+      });
+    }
+    let items = raw.map(mapClaimToItem)
     if (currentTab === 'new') {
       items = items.sort((a, b) => b.timestamp - a.timestamp)
+    } else {
+      // stake order for feed/search context
+      items = items.sort((a, b) => (b.staked || 0) - (a.staked || 0))
     }
     if (currentTab === 'feed') {
       feedItems = items
@@ -237,10 +366,12 @@ async function performRealSearch(query: string) {
     if (currentTab === 'feed') {
       feedItems = [];
       feedHasError = true;
+      feedErrorIsCompanion = false; // search failure not companion specific
       feedLoading = false;
     } else {
       latestItems = [];
       latestHasError = true;
+      latestErrorIsCompanion = false;
       latestLoading = false;
     }
     renderContent()
@@ -336,11 +467,40 @@ function doRenderFeedItems() {
     return;
   } else if (hasError) {
     stopLoadingAnimation();
-    const msg = noDaemonConnection
-      ? 'Unable to load feed.<br>Connection issue — using public data if available.'
-      : 'Failed to load content.<br>Please try again.';
-    c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">${msg}</div>`;
-    return;
+    const isCompanionErr = isFeedTab ? feedErrorIsCompanion : latestErrorIsCompanion;
+    if (isCompanionErr) {
+      c.innerHTML = `
+        <div class="py-6 text-center text-xs text-[#64748b]">
+          Companion not running.<br>
+          Restart your companion.<br>
+          Or do you want to switch to Public Mode?<br>
+          <button id="switch-to-public-btn" class="mt-2 action-btn teal text-xs px-3 py-1">Switch to Public Mode</button>
+        </div>
+      `;
+      const btn = c.querySelector('#switch-to-public-btn') as HTMLButtonElement | null;
+      if (btn) {
+        btn.onclick = () => {
+          chrome.storage.sync.set({ daemonUrl: null }, () => {
+            chrome.runtime.sendMessage({ type: 'setDaemonUrl', url: null }, () => {
+              feedHasError = false;
+              latestHasError = false;
+              feedErrorIsCompanion = false;
+              latestErrorIsCompanion = false;
+              noDaemonConnection = true;
+              const tabToFetch = (currentTab === 'feed' ? 'feed' : 'latest') as 'feed' | 'latest';
+              fetchRealFeed(tabToFetch);
+            });
+          });
+        };
+      }
+      return;
+    } else {
+      const msg = noDaemonConnection
+        ? 'Unable to load feed.<br>Connection issue — using public data if available.'
+        : 'Failed to load content.<br>Please try again.';
+      c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">${msg}</div>`;
+      return;
+    }
   } else if (!items.length) {
     stopLoadingAnimation();
     c.innerHTML = `<div class="py-6 text-center text-xs text-[#64748b]">No content available.</div>`;
@@ -920,6 +1080,12 @@ function showSettings() {
       if (!confirm('Reset view data and caches?')) return;
       feedItems = [];
       latestItems = [];
+      feedFetchId++;
+      latestFetchId++;
+      feedPage = 1;
+      latestPage = 1;
+      feedHasMore = true;
+      latestHasMore = true;
       vault = [];
       await chrome.storage.local.remove(['revivel_vault', 'revivel_history']);
       // Force fresh fetch so Latest (and Feed) actually get new content
@@ -944,10 +1110,18 @@ async function initPopup() {
   // Always fetch fresh for feed/latest to avoid stale data from previous configs/sessions
   feedItems = [];
   latestItems = [];
+  feedFetchId++;
+  latestFetchId++;
+  feedPage = 1;
+  latestPage = 1;
+  feedHasMore = true;
+  latestHasMore = true;
   feedLoading = true;
   latestLoading = true;
   feedHasError = false;
   latestHasError = false;
+  feedErrorIsCompanion = false;
+  latestErrorIsCompanion = false;
 
   // Always render something and attach listeners first (do not block on status messages)
   try { updateTabs(); renderContent(); } catch {}
@@ -958,6 +1132,9 @@ async function initPopup() {
       if (tab) {
         currentTab = tab
         searchTerm = ''  // clear search when switching tabs
+        // Reset pagination when explicitly switching to a list tab
+        if (tab === 'feed') { feedPage = 1; feedHasMore = true }
+        if (tab === 'new') { latestPage = 1; latestHasMore = true }
         updateTabs()
         renderContent()
         if (tab !== 'vault' && tab !== 'wallet') {
@@ -979,6 +1156,8 @@ async function initPopup() {
           performRealSearch(searchTerm)
         } else {
           // restore current tab's default feed
+          if ((currentTab as any) === 'feed') { feedPage=1; feedHasMore=true }
+          else { latestPage=1; latestHasMore=true }
           fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest')
         }
       }, 350)
@@ -1009,13 +1188,33 @@ async function initPopup() {
   updateTabs()
   renderContent()
 
-  // Fetch real LBRY content for feeds and latest
+  // Fetch real LBRY content for feeds and latest (Feed stake sorted, Latest date only)
+  feedPage = 1; latestPage = 1
   fetchRealFeed('feed')
   fetchRealFeed('latest')
+
+  // Scroll load-more for Feed / Latest in popup (same contract as player)
+  const contentScroller = document.getElementById('content-area')!
+  let popScrollT: any = null
+  contentScroller.addEventListener('scroll', () => {
+    if (popScrollT) clearTimeout(popScrollT)
+    popScrollT = setTimeout(() => {
+      const near = contentScroller.scrollTop + contentScroller.clientHeight > contentScroller.scrollHeight - 80
+      if (!near || searchTerm) return
+      if (currentTab === 'feed' && feedHasMore) loadMoreFeedPopup()
+      else if (currentTab === 'new' && latestHasMore) loadMoreLatestPopup()
+    }, 140)
+  }, { passive: true })
 
   // Status checks (async, non-blocking)
   updateHeaderStatus()
   setTimeout(() => updateHeaderStatus(), 600)
+
+  // Poll status so that when Companion is started *after* initial public load,
+  // we detect the flip and refresh Feed/Latest with Companion data (highest support etc).
+  setInterval(() => {
+    updateHeaderStatus().catch(() => {})
+  }, 8000)
 
   // Early status for the no-conn flag (non-blocking)
   new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r)).then((status) => {
@@ -1036,11 +1235,13 @@ async function initPopup() {
     }
   });
 
-  // Listen for new blocks to refresh Latest
+  // Listen for new blocks to refresh Latest (real-time, date order, reset to top page)
   chrome.runtime.onMessage.addListener((msg: any) => {
     if (msg.type === 'newBlock') {
       console.log('[ReviveL Popup] New block:', msg.height);
-      fetchRealFeed('latest');
+      latestPage = 1
+      latestHasMore = true
+      fetchRealFeed('latest')
     }
   });
 
@@ -1211,11 +1412,36 @@ ${safeMsg}
       const status = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r))
       const wasNoConn = noDaemonConnection;
       noDaemonConnection = !status?.connected;
+      // Use robust check for "now in companion" to trigger list refresh.
+      let nowInCompanion = !!status?.connected;
+      const usingD = (status as any)?.using === 'daemon' || (status as any)?.isCompanion;
+      const ep = String((status as any)?.endpoint || '');
+      if (usingD || /127\.0\.0\.1|localhost/.test(ep)) nowInCompanion = true;
+      try {
+        const cfg: any = await chrome.storage.sync.get(['daemonUrl']);
+        const du = String(cfg?.daemonUrl || '');
+        if (du.includes('127.0.0.1') || du.includes('localhost')) nowInCompanion = true;
+      } catch (_) {}
       currentStatus = status;
       renderHeaderStatus(status);
       // If connection state changed for feed/latest, re-render content to show/hide button
       if ((currentTab === 'feed' || currentTab === 'new') && wasNoConn !== noDaemonConnection) {
         renderContent();
+      }
+      // When Companion just became available, clear stale public-mode list data and re-fetch
+      // using daemon-backed queries (e.g. effective_amount for Feed = highest LBC support).
+      if (wasNoConn && nowInCompanion) {
+        feedItems = [];
+        latestItems = [];
+        feedFetchId++;
+        latestFetchId++;
+        feedPage = 1;
+        latestPage = 1;
+        feedHasMore = true;
+        latestHasMore = true;
+        if (currentTab === 'feed' || currentTab === 'new') {
+          fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest' );
+        }
       }
     } catch (e) {
       renderHeaderStatus({ connected: false, error: 'Detection failed' })
