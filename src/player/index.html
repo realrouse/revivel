@@ -6,8 +6,6 @@
   <title>ReviveL • Full Player</title>
 
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
-    
     :root {
       --bg: #0a0a0f;
       --surface: #111114;
@@ -16,7 +14,7 @@
     }
     
     body {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background: #0a0a0f;
       color: #e2e8f0;
       margin: 0;
@@ -25,7 +23,7 @@
     }
     
     .logo-font { 
-      font-family: 'Space Grotesk', sans-serif; 
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
       font-weight: 600; 
       letter-spacing: -0.025em;
     }
@@ -453,8 +451,8 @@
     .feed-words { 
       font-size: 9px; 
       color: #94a3b8; 
-      max-width: 90px;
-      width: 90px;
+      max-width: 110px;
+      width: 110px;
       position: sticky;
       top: 78px;
       align-self: flex-start;
@@ -474,7 +472,7 @@
       cursor: pointer;
       white-space: nowrap;
       transition: all 0.1s ease;
-      font-size: 8.5px;
+      font-size: 10px;
     }
     .feed-word:hover {
       background: #14b8a6;
@@ -501,7 +499,7 @@
 
       <!-- Main Navigation - premium pill style -->
       <div class="flex items-center gap-x-1">
-        <button class="nav-tab active" data-view="player">Player</button>
+        <button class="nav-tab" data-view="player">Player</button>
         <button class="nav-tab" data-view="feed">Feed</button>
         <button class="nav-tab" data-view="latest">Latest</button>
         <button class="nav-tab" data-view="search">Search</button>
@@ -525,7 +523,7 @@
   <div class="main-content px-9 max-w-[1320px] mx-auto">
 
     <!-- ============ PLAYER VIEW ============ -->
-    <div id="view-player" class="view active">
+    <div id="view-player" class="view">
       <!-- Centered Video (60% width) - premium frame -->
       <div class="mb-9">
         <div class="video-container mx-auto" style="box-shadow: 0 30px 70px -15px rgb(0 0 0 / 0.65);">
@@ -587,7 +585,11 @@
 
         <!-- Main claims grid -->
         <div class="flex-1 min-w-0">
-          <div id="feed-grid" class="content-grid"></div>
+          <div id="feed-grid" class="content-grid">
+            <!-- Initial skeleton for faster LCP / perceived performance -->
+            <div class="claim-card" style="opacity:0.4"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='190' height='107'%3E%3Crect width='100%25' height='100%25' fill='%23333'/%3E%3C/svg%3E" alt=""><div class="p-3"><div class="text-sm font-semibold" style="background:#333;height:1em;width:90%"></div><div class="text-xs mt-1" style="background:#333;height:0.7em;width:60%"></div></div></div>
+            <div class="claim-card" style="opacity:0.4"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='190' height='107'%3E%3Crect width='100%25' height='100%25' fill='%23333'/%3E%3C/svg%3E" alt=""><div class="p-3"><div class="text-sm font-semibold" style="background:#333;height:1em;width:85%"></div><div class="text-xs mt-1" style="background:#333;height:0.7em;width:50%"></div></div></div>
+          </div>
           <div id="feed-more-status" class="text-[10px] text-[#64748b] mt-2 text-center"></div>
         </div>
 
@@ -607,13 +609,33 @@
 
     <!-- ============ SEARCH VIEW ============ -->
     <div id="view-search" class="view">
-      <div class="mb-6">
+      <div class="mb-4">
         <div class="text-[28px] font-semibold tracking-[-0.4px]">Search</div>
         <input id="search-input" type="text" placeholder="Search claims on LBRY..." 
                class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm focus:border-[#14b8a6] outline-none mt-3">
       </div>
-      <div id="search-grid" class="content-grid"></div>
-      <div id="search-status" class="text-xs text-[#64748b] mt-4"></div>
+
+      <!-- Filters + Word Library on Search too -->
+      <div id="search-customize" class="mb-3 flex flex-wrap gap-2 items-center">
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="all">All Time</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="month">This Month</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="week">This Week</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="high">> 100k LBC</button>
+        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="veryhigh">> 500k LBC</button>
+        <button id="search-word-library-btn" class="action-btn text-xs px-3 py-1">📚 Word Library: General</button>
+      </div>
+
+      <!-- Flex container for words + search results -->
+      <div class="feed-layout flex gap-3" style="align-items:flex-start;">
+        <div id="search-left-words" class="feed-words shrink-0"></div>
+
+        <div class="flex-1 min-w-0">
+          <div id="search-grid" class="content-grid"></div>
+          <div id="search-status" class="text-xs text-[#64748b] mt-2 text-center"></div>
+        </div>
+
+        <div id="search-right-words" class="feed-words shrink-0"></div>
+      </div>
     </div>
 
     <!-- ============ LIBRARY VIEW ============ -->

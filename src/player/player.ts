@@ -6,10 +6,12 @@ import {
   getClaimTimestamp, getRandomSearchWords, dedupClaims, WORD_LIBRARY_LABELS, getLibraryWords
 } from '../utils/lbryApi.js'
 
-let currentUri = new URLSearchParams(location.search).get('uri') || 'lbry://what'
-let initialTitle = new URLSearchParams(location.search).get('title') || null
+const urlParams = new URLSearchParams(location.search)
+let currentUri = urlParams.get('uri') || 'lbry://what'
+let initialTitle = urlParams.get('title') || null
+const openedWithSpecificVideo = !!urlParams.get('uri')
 let currentClaim: any = null
-let currentView: string = 'player'
+let currentView: string = openedWithSpecificVideo ? 'player' : 'feed'
 let feedItems: any[] = []
 let latestItems: any[] = []
 let searchItems: any[] = []
@@ -37,6 +39,11 @@ let feedFetchId = 0
 let latestFetchId = 0
 let searchFetchId = 0
 
+// Prefetch state for instant scroll experience (after first 20, background load next 20)
+let feedPrefetchedItems: any[] = []
+let feedPrefetchPage = 0
+let isPrefetchingFeed = false
+
 // Listen for new blockchain blocks from background to refresh Latest
 chrome.runtime.onMessage.addListener((msg: any) => {
   if (msg.type === 'newBlock') {
@@ -63,6 +70,12 @@ function showView(view: string) {
 
   currentView = view
 
+  if (view === 'player' && !currentClaim && !openedWithSpecificVideo) {
+    // Lazily load the default demo video now that the user has switched to the Player tab.
+    // We pass true for autoPlay because the tab is now visible.
+    loadVideo('lbry://what', true)
+  }
+
   if (view === 'feed') {
     feedPage = 1; feedHasMore = true; isLoadingMoreFeed = false; currentFeedFilter = 'all'
     loadFeed()
@@ -73,6 +86,9 @@ function showView(view: string) {
   }
   if (view === 'search') {
     // keep searchItems; user types to (re)search
+    // ensure words are shown on search sides (full load)
+    renderFeedSideWords()
+    wireFeedFilters()  // wire the search filters + lib btn if needed
   }
   if (view === 'library') loadLibrary()
   if (view === 'wallet') renderWallet()
@@ -134,7 +150,7 @@ async function updateStatus() {
 }
 
 // ===== Core Video Playback (60% centered) =====
-async function loadVideo(uri: string) {
+async function loadVideo(uri: string, autoPlay: boolean = true) {
   currentUri = uri
   const metaEl = document.getElementById('meta')!
   const descEl = document.getElementById('video-desc')!
@@ -227,18 +243,72 @@ async function loadVideo(uri: string) {
     }
 
     if (playable && daemonConnected) {
-      playVideo(playable)
-      addToHistory(uri, title, claim)
-    } else if (!daemonConnected) {
-      // Public mode: 100% use Odysee embed for reliable playback (bypasses all direct video issues)
-      const embedUrl = getOdyseeEmbedUrl(claim)
-      if (embedUrl) {
-        showEmbed(embedUrl)
+      currentStreamUrl = playable
+      const overlay = document.getElementById('video-overlay')!
+      overlay.classList.add('hidden')
+      overlay.classList.remove('flex')
+      videoEl.style.display = 'block'
+
+      if (autoPlay) {
+        const isLikelyHls = playable.includes('.m3u8') || playable.includes('/streams/') || playable.includes('odycdn.com');
+        if (isLikelyHls && typeof (window as any).Hls === 'undefined') {
+          const script = document.createElement('script');
+          script.src = 'https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js';
+          script.onload = () => {
+            const hls = new (window as any).Hls({ enableWorker: false, lowLatencyMode: true });
+            hls.loadSource(playable);
+            hls.attachMedia(videoEl);
+            hls.on((window as any).Hls.Events.MANIFEST_PARSED, () => {
+              const p = videoEl.play(); if (p) p.catch(() => {});
+            });
+          };
+          script.onerror = () => {
+            videoEl.src = playable;
+            videoEl.load();
+            const p = videoEl.play(); if (p) p.catch(() => {});
+          };
+          document.head.appendChild(script);
+        } else {
+          const isHls = playable.includes('.m3u8') || playable.includes('/streams/') || playable.includes('odycdn.com');
+          if (isHls && (window as any).Hls && (window as any).Hls.isSupported()) {
+            const hls = new (window as any).Hls({ enableWorker: false, lowLatencyMode: true });
+            hls.loadSource(playable);
+            hls.attachMedia(videoEl);
+            hls.on((window as any).Hls.Events.MANIFEST_PARSED, () => {
+              const p = videoEl.play(); if (p) p.catch(() => {});
+            });
+          } else {
+            videoEl.src = playable;
+            videoEl.load();
+            const p = videoEl.play(); if (p) p.catch(() => {});
+          }
+        }
+        addToHistory(uri, title, claim)
       } else {
-        // fallback to constructing from uri if claim ids missing
-        const clean = uri.replace('lbry://', '');
-        const embedUrlFallback = `https://odysee.com/$/embed/${clean}`;
-        showEmbed(embedUrlFallback);
+        // Load but do not auto-play (for default video when starting on Feed tab)
+        videoEl.src = playable;
+        videoEl.load();
+        // leave paused; user can switch to Player tab and play manually
+      }
+    } else if (!daemonConnected) {
+      if (autoPlay) {
+        // Public mode: 100% use Odysee embed for reliable playback (bypasses all direct video issues)
+        const embedUrl = getOdyseeEmbedUrl(claim)
+        if (embedUrl) {
+          showEmbed(embedUrl)
+        } else {
+          // fallback to constructing from uri if claim ids missing
+          const clean = uri.replace('lbry://', '');
+          const embedUrlFallback = `https://odysee.com/$/embed/${clean}`;
+          showEmbed(embedUrlFallback);
+        }
+      } else {
+        // Default load without ?uri= : populate meta but do not auto-embed/play
+        const overlay = document.getElementById('video-overlay')!
+        overlay.innerHTML = `<div class="text-center px-4">Default video loaded.<br>Switch to the Player tab to watch.</div>`
+        overlay.classList.remove('hidden')
+        overlay.classList.add('flex')
+        videoEl.style.display = 'none'
       }
     } else {
       const isDirectLaunch = !!new URLSearchParams(location.search).get('uri')
@@ -488,7 +558,7 @@ async function loadFeed(replace = true) {
       stream_types: ['video'],
       has_source: true,
       page: feedPage,
-      page_size: 30,
+      page_size: 20,  // first 20 for LCP, then prefetch next 20
       order_by: ['effective_amount'],   // ALWAYS stake order for Feed (highest first)
     }
     if (!useCompanion) {
@@ -545,6 +615,11 @@ async function loadFeed(replace = true) {
     updateWordLibraryButton()
     // Render side random words (left + right) - 60 words, current library, sticky
     renderFeedSideWords()
+
+    // After first 20 loaded and displayed, background-load the next 20
+    if (replace && feedPage === 1 && !isPrefetchingFeed) {
+      prefetchNextFeedItems()
+    }
   } catch (e) {
     if (myId === feedFetchId) {
       grid.innerHTML = `<div class="text-xs text-[#64748b]">Failed to load Feed.</div>`
@@ -553,7 +628,25 @@ async function loadFeed(replace = true) {
 }
 
 function wireFeedFilters() {
-  const container = document.getElementById('feed-customize')
+  // Wire feed customize
+  wireFilterContainer('feed-customize', () => loadFeed(true))
+
+  // Wire search customize (same filters, re-run search if query present)
+  wireFilterContainer('search-customize', () => {
+    const inp = document.getElementById('search-input') as HTMLInputElement | null
+    const q = (inp && inp.value.trim()) || ''
+    if (q.length >= 2) {
+      // re-trigger search (uses currentFeedFilter in search logic? we can extend)
+      const run = (window as any).__revivelRunSearch
+      if (run) run(q, true)
+    } else {
+      // if no query, perhaps do nothing or load initial
+    }
+  })
+}
+
+function wireFilterContainer(containerId: string, onFilter: () => void) {
+  const container = document.getElementById(containerId)
   if (!container) return
   container.querySelectorAll('.feed-filter-btn').forEach((btn: any) => {
     btn.classList.toggle('active', btn.dataset.filter === currentFeedFilter)
@@ -563,16 +656,23 @@ function wireFeedFilters() {
       const f = (btn.dataset.filter || 'all') as any
       if (f === currentFeedFilter) return
       currentFeedFilter = f
-      // re-apply by reloading page 1 with filter
-      loadFeed(true)
+      onFilter()
     })
   })
 }
 
 function renderFeedSideWords() {
-  const left = document.getElementById('feed-left-words')
-  const right = document.getElementById('feed-right-words')
-  if (!left || !right) return
+  // Render full 60 words at once to feed sides
+  renderWordsToContainers('feed-left-words', 'feed-right-words')
+
+  // Also render to search sides if present
+  renderWordsToContainers('search-left-words', 'search-right-words')
+}
+
+function renderWordsToContainers(leftId: string, rightId: string) {
+  const left = document.getElementById(leftId)
+  const right = document.getElementById(rightId)
+  if (!left && !right) return
 
   const wordsL = getRandomSearchWords(60, currentWordLibrary)
   const wordsR = getRandomSearchWords(60, currentWordLibrary)
@@ -593,18 +693,23 @@ function renderFeedSideWords() {
     return s
   }
 
-  left.innerHTML = ''
-  right.innerHTML = ''
-  wordsL.forEach(w => left.appendChild(make(w)))
-  wordsR.forEach(w => right.appendChild(make(w)))
+  if (left) {
+    left.innerHTML = ''
+    wordsL.forEach(w => left.appendChild(make(w)))
+  }
+  if (right) {
+    right.innerHTML = ''
+    wordsR.forEach(w => right.appendChild(make(w)))
+  }
 }
 
 function updateWordLibraryButton() {
-  const btn = document.getElementById('word-library-btn') as HTMLButtonElement | null
-  if (btn) {
-    const label = WORD_LIBRARY_LABELS[currentWordLibrary] || 'General'
-    btn.textContent = `📚 Word Library: ${label}`
-  }
+  const label = WORD_LIBRARY_LABELS[currentWordLibrary] || 'General'
+  const text = `📚 Word Library: ${label}`
+  const btn1 = document.getElementById('word-library-btn') as HTMLButtonElement | null
+  if (btn1) btn1.textContent = text
+  const btn2 = document.getElementById('search-word-library-btn') as HTMLButtonElement | null
+  if (btn2) btn2.textContent = text
 }
 
 function showWordLibrarySelector() {
@@ -670,14 +775,89 @@ function showWordLibrarySelector() {
 
 async function loadMoreFeed() {
   if (!feedHasMore || isLoadingMoreFeed || currentView !== 'feed') return
+
+  // If we have prefetched the next page, use it immediately for instant scroll
+  if (feedPrefetchedItems.length > 0 && feedPrefetchPage === feedPage + 1) {
+    isLoadingMoreFeed = true
+    const statusEl = document.getElementById('feed-more-status')!
+    feedItems = dedupClaims(feedItems, feedPrefetchedItems)
+    renderClaimGrid(feedItems, document.getElementById('feed-grid')!)
+    feedPage = feedPrefetchPage
+    feedPrefetchedItems = []
+    feedPrefetchPage = 0
+    statusEl.textContent = feedHasMore ? 'Scroll for more staked claims…' : 'End of feed results.'
+    isLoadingMoreFeed = false
+    // Background load the next 20
+    prefetchNextFeedItems()
+    return
+  }
+
   isLoadingMoreFeed = true
   const statusEl = document.getElementById('feed-more-status')!
   statusEl.textContent = 'Loading more staked…'
   feedPage += 1
   try {
     await loadFeed(false /* append */)
+    // After using, background prefetch next
+    prefetchNextFeedItems()
   } finally {
     isLoadingMoreFeed = false
+  }
+}
+
+async function prefetchNextFeedItems() {
+  if (isPrefetchingFeed || !feedHasMore || feedPrefetchedItems.length > 0) return
+  isPrefetchingFeed = true
+  const nextPage = feedPage + 1
+  try {
+    // Minimal duplicate of load logic for prefetch (no render, no filters for simplicity, just raw next page)
+    let useCompanion = false
+    try {
+      const cfg: any = await chrome.storage.sync.get(['daemonUrl'])
+      if (String(cfg?.daemonUrl || '').includes('127.0.0.1') || String(cfg?.daemonUrl || '').includes('localhost')) useCompanion = true
+    } catch (_) {}
+    if (!useCompanion) {
+      try {
+        const st: any = await getDaemonStatus().catch(() => ({}))
+        const ep = String((st as any)?.endpoint || '')
+        if (st?.connected || st?.isCompanion || /127\.0\.0\.1|localhost/.test(ep)) useCompanion = true
+      } catch (_) {}
+    }
+
+    const params: any = {
+      claim_type: 'stream',
+      stream_types: ['video'],
+      has_source: true,
+      page: nextPage,
+      page_size: 20,
+      order_by: ['effective_amount'],
+    }
+    if (!useCompanion) {
+      params.fee_amount = '<=0'
+      params.not_tags = ['mature', 'nsfw']
+    }
+
+    const res = await searchLbryClaims(params)
+    let items = (res.items || [])
+    if (!useCompanion) {
+      items = items.filter((c: any) => {
+        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+        return !tags.some(t => t === 'mature' || t === 'nsfw')
+      })
+    }
+    items = items.sort((a: any, b: any) => {
+      const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+      const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+      return be - ae
+    })
+
+    feedPrefetchedItems = items
+    feedPrefetchPage = nextPage
+    feedHasMore = (res.items || []).length >= 20
+  } catch (e) {
+    // silent prefetch fail ok
+  } finally {
+    isPrefetchingFeed = false
   }
 }
 
@@ -824,8 +1004,9 @@ function renderClaimGrid(items: any[], container: HTMLElement) {
 
     const card = document.createElement('div')
     card.className = 'claim-card'
+    const imgHtml = `<img src="${thumb}" ${container.children.length < 2 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' } width="190" height="107">`
     card.innerHTML = `
-      <img src="${thumb}">
+      ${imgHtml}
       <div class="p-3">
         <div class="text-sm font-semibold leading-tight line-clamp-2">${title}</div>
         <div class="text-xs text-[#64748b] mt-1">${metaLine}</div>
@@ -901,6 +1082,19 @@ function setupSearch() {
         const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
         const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
         return be - ae
+      })
+
+      // Apply current feed filter also to search results (since filters are present on search tab)
+      const now = Math.floor(Date.now() / 1000)
+      const day = 86400
+      items = items.filter((c: any) => {
+        const ts = getClaimTimestamp(c)
+        const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
+        if (currentFeedFilter === 'month') return ts > now - (30 * day)
+        if (currentFeedFilter === 'week') return ts > now - (7 * day)
+        if (currentFeedFilter === 'high') return stk >= 100000
+        if (currentFeedFilter === 'veryhigh') return stk >= 500000
+        return true
       })
 
       if (myId !== searchFetchId) return
@@ -1280,9 +1474,9 @@ async function init() {
   setupNav()
   setupPlayerActions()
   setupSearch()
-  await updateStatus()
-  await loadVault()
-  await loadHistory()
+
+  // Wire filters early (for both feed and search tabs)
+  wireFeedFilters()
 
   // Explicit clear on every full page load
   feedItems = []
@@ -1297,7 +1491,21 @@ async function init() {
   feedHasMore = true
   latestHasMore = true
 
-  await loadVideo(currentUri)
+  // Start the critical feed load *immediately* for default Feed view.
+  // This gets the data flowing as early as possible for LCP.
+  if (!openedWithSpecificVideo) {
+    loadFeed()
+  }
+
+  // Only eagerly load video if a specific one was requested via ?uri=.
+  if (openedWithSpecificVideo) {
+    loadVideo(currentUri, true)
+  }
+
+  // Non-critical stuff after kickstarting the main content fetch
+  updateStatus().catch(() => {})
+  loadVault().catch(() => {})
+  loadHistory().catch(() => {})
 
   // Load saved word library preference
   try {
@@ -1307,20 +1515,29 @@ async function init() {
     }
   } catch (_) {}
 
-  // Wire Word Library button (appears in Feed view)
-  const wordLibBtn = document.getElementById('word-library-btn')
-  if (wordLibBtn) {
-    wordLibBtn.addEventListener('click', (e) => {
-      e.stopImmediatePropagation()
-      showWordLibrarySelector()
-    })
+  // Wire Word Library buttons (Feed and Search)
+  const wireWordLibBtn = (id: string) => {
+    const btn = document.getElementById(id)
+    if (btn) {
+      btn.addEventListener('click', (e) => {
+        e.stopImmediatePropagation()
+        showWordLibrarySelector()
+      })
+    }
   }
+  wireWordLibBtn('word-library-btn')
+  wireWordLibBtn('search-word-library-btn')
   updateWordLibraryButton()
 
-  // Initial loads (Feed stake sorted, Latest date only)
-  loadFeed()
-  loadLatest(true)
-  showView('player')
+  if (openedWithSpecificVideo) {
+    loadLatest(true)
+  } else {
+    // Preload latest in background
+    loadLatest(true).catch(() => {})
+  }
+
+  // Default view: Feed when opening without a specific video, Player otherwise
+  showView(openedWithSpecificVideo ? 'player' : 'feed')
 
   // Infinite scroll for load-more on Feed / Latest / Search (player)
   let scrollTimer: any = null
