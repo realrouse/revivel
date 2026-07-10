@@ -78,6 +78,8 @@ function showView(view: string) {
 
   if (view === 'feed') {
     feedPage = 1; feedHasMore = true; isLoadingMoreFeed = false; currentFeedFilter = 'all'
+    feedPrefetchedItems = []
+    feedPrefetchPage = 0
     loadFeed()
   }
   if (view === 'latest') {
@@ -535,6 +537,8 @@ async function loadFeed(replace = true) {
     feedItems = []
     feedPage = 1
     feedHasMore = true
+    feedPrefetchedItems = []
+    feedPrefetchPage = 0
   }
   statusEl.textContent = ''
 
@@ -607,7 +611,7 @@ async function loadFeed(replace = true) {
     renderClaimGrid(feedItems, grid)
 
     // Update hasMore
-    feedHasMore = (res.items || []).length >= 25
+    feedHasMore = (res.items || []).length >= 20
     statusEl.textContent = feedHasMore ? 'Scroll for more staked claims…' : 'End of feed results.'
 
     // Wire customize buttons (once)
@@ -849,6 +853,19 @@ async function prefetchNextFeedItems() {
       const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
       const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
       return be - ae
+    })
+
+    // Apply current customize filter also for prefetched (so filtered more appear correctly)
+    const now = Math.floor(Date.now() / 1000)
+    const day = 86400
+    items = items.filter((c: any) => {
+      const ts = getClaimTimestamp(c)
+      const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
+      if (currentFeedFilter === 'month') return ts > now - (30 * day)
+      if (currentFeedFilter === 'week') return ts > now - (7 * day)
+      if (currentFeedFilter === 'high') return stk >= 100000
+      if (currentFeedFilter === 'veryhigh') return stk >= 500000
+      return true
     })
 
     feedPrefetchedItems = items
@@ -1208,6 +1225,8 @@ async function resetViewData() {
   feedHasMore = true
   latestHasMore = true
   searchHasMore = true
+  feedPrefetchedItems = []
+  feedPrefetchPage = 0
   vault = []
   history = []
 
@@ -1490,6 +1509,8 @@ async function init() {
   searchPage = 1
   feedHasMore = true
   latestHasMore = true
+  feedPrefetchedItems = []
+  feedPrefetchPage = 0
 
   // Start the critical feed load *immediately* for default Feed view.
   // This gets the data flowing as early as possible for LCP.
