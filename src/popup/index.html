@@ -239,6 +239,45 @@
       gap: 10px;
     }
 
+    /* View mode variants for popup lists */
+    .content-grid.view-mode-small { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+    .content-grid.view-mode-small .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-small .claim-card .p-2 { padding: 4px; font-size: 10px; }
+
+    .content-grid.view-mode-medium { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+
+    .content-grid.view-mode-big { grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 12px; }
+    .content-grid.view-mode-big .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-big .claim-card .p-2 { padding: 8px; }
+
+    .content-grid.view-mode-huge { grid-template-columns: repeat(1, minmax(0, 1fr)); gap: 16px; }
+    .content-grid.view-mode-huge .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-huge .claim-card { max-width: 420px; margin: 0 auto; }
+    .content-grid.view-mode-huge .claim-card .p-2 { padding: 12px; font-size: 13px; }
+
+    .content-grid.view-mode-list {
+      display: block;
+    }
+    .content-grid.view-mode-list .claim-card {
+      display: block;
+      margin-bottom: 4px;
+      border-radius: 8px;
+    }
+    .content-grid.view-mode-list .claim-card img {
+      width: 64px; height: 36px; aspect-ratio: 16/9; flex-shrink: 0; border-radius: 3px; object-fit: cover;
+    }
+
+    .content-grid.view-mode-details {
+      display: block;
+    }
+    .content-grid.view-mode-details .claim-card {
+      display: block;
+      margin-bottom: 6px;
+    }
+    .content-grid.view-mode-details .claim-card img {
+      width: 100px; height: 56.25px; aspect-ratio: 16/9; flex-shrink: 0;
+    }
+
     .grid { display: grid; }
     .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .gap-1 { gap: 4px; }
@@ -355,6 +394,19 @@
     <button data-tab="new" class="tab-btn flex-1">Latest</button>
     <button data-tab="vault" class="tab-btn flex-1">Vault</button>
     <button data-tab="wallet" class="tab-btn flex-1">Wallet</button>
+  </div>
+
+  <!-- View options for list (Feed/Latest) -->
+  <div class="px-3 pb-1 bg-[#111114] flex items-center gap-x-2 text-[10px]" id="popup-view-options" style="display:none;">
+    <span class="text-[#64748b]">View:</span>
+    <select id="popup-view-mode" class="bg-[#1e2937] border border-[#334155] rounded px-1.5 py-0.5 text-[10px] text-[#e2e8f0]">
+      <option value="list">List</option>
+      <option value="details">Details</option>
+      <option value="small">Small Icons</option>
+      <option value="medium" selected>Medium Icons</option>
+      <option value="big">Big Icons</option>
+      <option value="huge">Huge Icons</option>
+    </select>
   </div>
 
   <!-- Content Area (scrolls, flex takes remaining space) -->

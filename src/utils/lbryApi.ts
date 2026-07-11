@@ -266,17 +266,44 @@ export function extractClaim(resolveResult: LbryResolveResult, uri: string): Lbr
  * when order_by release_time on daemon or public proxy surfaces them due to bad value.release_time.
  */
 export function getClaimTimestamp(claim: any): number {
-  const metaTs = Number(claim?.meta?.creation_timestamp || 0)
-  let valTs = Number(claim?.value?.release_time || claim?.release_time || 0)
   const now = Math.floor(Date.now() / 1000)
-  // Heuristics for bogus release_time:
-  // > 1e11 likely ms since epoch (e.g. 1.7e12)
-  // > now + ~10 years also suspicious for a "release time"
-  // very small or year-9999 sentinels (~2.5e11) also bad for ordering
-  if (!valTs || valTs > 1e11 || valTs > (now + 86400 * 365 * 10) || valTs > 2e11) {
-    valTs = 0
+  const MAX_FUTURE_SKEW = 86400 * 2; // allow up to ~2 days in future for clock skew / minor errors
+
+  // Prefer meta.creation_timestamp (on-chain)
+  let ts = Number(claim?.meta?.creation_timestamp || 0)
+  if (!ts || ts <= 0 || ts > now + MAX_FUTURE_SKEW) {
+    ts = 0
   }
-  return metaTs > 0 ? metaTs : (valTs > 0 ? valTs : 0)
+
+  if (ts === 0) {
+    let valTs = Number(claim?.value?.release_time || claim?.release_time || 0)
+    // Heuristics for bogus release_time:
+    // > 1e11 likely ms since epoch (e.g. 1.7e12)
+    // > now + ~10 years also suspicious
+    // very small or year-9999 sentinels also bad
+    // Also reject clear future dates (e.g. year 3003 bogus claims)
+    if (!valTs || valTs > 1e11 || valTs > (now + 86400 * 365 * 10) || valTs > 2e11 || valTs > now + MAX_FUTURE_SKEW) {
+      valTs = 0
+    }
+    ts = valTs
+  }
+
+  return ts > 0 ? ts : 0
+}
+
+/**
+ * Returns true if the claim has a release_time in the future (beyond skew).
+ * Such claims should be filtered out of "Latest" results, as they are not yet
+ * "released" per the publisher (e.g. bogus future-year claims like 8878, 3003).
+ */
+export function isFutureDatedClaim(claim: any): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const MAX_FUTURE_SKEW = 86400 * 2; // 2 days
+  const valTs = Number(claim?.value?.release_time || claim?.release_time || 0)
+  if (valTs > now + MAX_FUTURE_SKEW) {
+    return true
+  }
+  return false
 }
 
 /**

@@ -92,6 +92,10 @@
       color: #64748b;
     }
 
+    #search-input::placeholder {
+      color: #64748b;
+    }
+
     .video-container {
       width: 60%;
       max-width: 860px;
@@ -195,6 +199,51 @@
       aspect-ratio: 16/9;
       object-fit: cover;
       background: #0a0a0f;
+    }
+
+    /* View mode variants for content grids */
+    .content-grid.view-mode-small { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; }
+    .content-grid.view-mode-small .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-small .claim-card .p-3 { padding: 6px; font-size: 11px; }
+
+    .content-grid.view-mode-medium { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 20px; }
+
+    .content-grid.view-mode-big { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 24px; }
+    .content-grid.view-mode-big .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-big .claim-card .p-3 { padding: 12px; }
+
+    .content-grid.view-mode-huge { grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 32px; }
+    .content-grid.view-mode-huge .claim-card img { aspect-ratio: 16/9; }
+    .content-grid.view-mode-huge .claim-card .p-3 { padding: 16px; font-size: 14px; }
+
+    .content-grid.view-mode-list {
+      display: block;
+    }
+    .content-grid.view-mode-list .claim-card {
+      display: block;
+      margin-bottom: 6px;
+      border-radius: 8px;
+    }
+    .content-grid.view-mode-list .claim-card img {
+      width: 64px;
+      height: 36px;
+      aspect-ratio: 16/9;
+      flex: 0 0 auto;
+      border-radius: 4px;
+    }
+
+    .content-grid.view-mode-details {
+      display: block;
+    }
+    .content-grid.view-mode-details .claim-card {
+      display: block;
+      margin-bottom: 10px;
+    }
+    .content-grid.view-mode-details .claim-card img {
+      width: 120px;
+      height: 67.5px;
+      aspect-ratio: 16/9;
+      flex-shrink: 0;
     }
 
     .action-btn {
@@ -485,6 +534,43 @@
       color: white;
     }
     .feed-layout { min-height: 300px; }
+
+    .random-filter {
+      position: relative;
+      display: inline-block;
+    }
+    .random-dropdown {
+      display: none;
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: #111114;
+      border: 1px solid #27272a;
+      border-radius: 6px;
+      min-width: 130px;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      font-size: 10px;
+      overflow: hidden;
+    }
+    .random-filter:hover .random-dropdown {
+      display: block;
+    }
+    .random-option {
+      padding: 5px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.1s;
+    }
+    .random-option:hover {
+      background: #14b8a6;
+      color: white;
+    }
+    .random-option.active {
+      background: #14b8a6;
+      color: white;
+    }
+  </style>
   </style>
 </head>
 <body class="bg-[#0a0a0f] text-[#e2e8f0]">
@@ -563,9 +649,22 @@
 
     <!-- ============ FEED VIEW ============ -->
     <div id="view-feed" class="view">
-      <div class="mb-4">
-        <div class="text-[28px] font-semibold tracking-[-0.4px]">Feed</div>
-        <div class="text-sm text-[#64748b]">Highest LBC support (most deposited into claims)</div>
+      <div class="mb-4 flex items-start justify-between gap-4">
+        <div>
+          <div class="text-[28px] font-semibold tracking-[-0.4px]">Feed</div>
+          <div class="text-sm text-[#64748b]">Highest LBC support (most deposited into claims)</div>
+        </div>
+        <div class="view-options flex items-center gap-2 text-xs">
+          <span class="text-[#64748b]">View:</span>
+          <select class="view-mode-select bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-xs text-[#e2e8f0]" data-grid="feed-grid">
+            <option value="list">List</option>
+            <option value="details">Details</option>
+            <option value="small">Small Icons</option>
+            <option value="medium" selected>Medium Icons</option>
+            <option value="big">Big Icons</option>
+            <option value="huge">Huge Icons</option>
+          </select>
+        </div>
       </div>
 
       <!-- Customize feed controls + Word Library selector -->
@@ -573,8 +672,15 @@
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="all">All Time</button>
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="month">This Month</button>
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="week">This Week</button>
-        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="high">> 100k LBC</button>
-        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="veryhigh">> 500k LBC</button>
+        <div class="random-filter">
+          <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="random">Random</button>
+          <div class="random-dropdown">
+            <div class="random-option" data-n="100">from top 100</div>
+            <div class="random-option" data-n="500">from top 500</div>
+            <div class="random-option" data-n="1000">from top 1000</div>
+            <div class="random-option" data-n="5000">from top 5000</div>
+          </div>
+        </div>
         <button id="word-library-btn" class="action-btn text-xs px-3 py-1">📚 Word Library: General</button>
       </div>
 
@@ -600,19 +706,45 @@
 
     <!-- ============ LATEST VIEW ============ -->
     <div id="view-latest" class="view">
-      <div class="mb-6">
-        <div class="text-[28px] font-semibold tracking-[-0.4px]">Latest</div>
-        <div class="text-sm text-[#64748b]">Newest releases on the network</div>
+      <div class="mb-6 flex items-start justify-between gap-4">
+        <div>
+          <div class="text-[28px] font-semibold tracking-[-0.4px]">Latest</div>
+          <div class="text-sm text-[#64748b]">Newest releases on the network</div>
+        </div>
+        <div class="view-options flex items-center gap-2 text-xs">
+          <span class="text-[#64748b]">View:</span>
+          <select class="view-mode-select bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-xs text-[#e2e8f0]" data-grid="latest-grid">
+            <option value="list">List</option>
+            <option value="details">Details</option>
+            <option value="small">Small Icons</option>
+            <option value="medium" selected>Medium Icons</option>
+            <option value="big">Big Icons</option>
+            <option value="huge">Huge Icons</option>
+          </select>
+        </div>
       </div>
       <div id="latest-grid" class="content-grid"></div>
     </div>
 
     <!-- ============ SEARCH VIEW ============ -->
     <div id="view-search" class="view">
-      <div class="mb-4">
-        <div class="text-[28px] font-semibold tracking-[-0.4px]">Search</div>
-        <input id="search-input" type="text" placeholder="Search claims on LBRY..." 
-               class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm focus:border-[#14b8a6] outline-none mt-3">
+      <div class="mb-4 flex items-start justify-between gap-4">
+        <div class="flex-1 min-w-0">
+          <div class="text-[28px] font-semibold tracking-[-0.4px]">Search</div>
+          <input id="search-input" type="text" placeholder="Search claims on LBRY..." 
+                 class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm text-[#e2e8f0] focus:border-[#14b8a6] outline-none mt-3">
+        </div>
+        <div class="view-options flex items-center gap-2 text-xs mt-1">
+          <span class="text-[#64748b]">View:</span>
+          <select class="view-mode-select bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-xs text-[#e2e8f0]" data-grid="search-grid">
+            <option value="list">List</option>
+            <option value="details">Details</option>
+            <option value="small">Small Icons</option>
+            <option value="medium" selected>Medium Icons</option>
+            <option value="big">Big Icons</option>
+            <option value="huge">Huge Icons</option>
+          </select>
+        </div>
       </div>
 
       <!-- Filters + Word Library on Search too -->
@@ -620,8 +752,15 @@
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="all">All Time</button>
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="month">This Month</button>
         <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="week">This Week</button>
-        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="high">> 100k LBC</button>
-        <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="veryhigh">> 500k LBC</button>
+        <div class="random-filter">
+          <button class="feed-filter-btn action-btn text-xs px-3 py-1" data-filter="random">Random</button>
+          <div class="random-dropdown">
+            <div class="random-option" data-n="100">from top 100</div>
+            <div class="random-option" data-n="500">from top 500</div>
+            <div class="random-option" data-n="1000">from top 1000</div>
+            <div class="random-option" data-n="5000">from top 5000</div>
+          </div>
+        </div>
         <button id="search-word-library-btn" class="action-btn text-xs px-3 py-1">📚 Word Library: General</button>
       </div>
 
@@ -681,7 +820,7 @@
           <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
             <div class="text-sm font-semibold mb-3">Receive LBC</div>
             <div class="flex gap-2 mb-3">
-              <input id="wallet-receive-addr" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm font-mono" readonly />
+              <input id="wallet-receive-addr" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm font-mono text-[#e2e8f0]" readonly />
               <button id="wallet-copy-addr" class="action-btn">Copy</button>
             </div>
             <button id="wallet-gen-addr" class="action-btn mb-3">Generate New Address</button>
@@ -694,9 +833,9 @@
           <!-- Send -->
           <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
             <div class="text-sm font-semibold mb-3">Send LBC</div>
-            <input id="wallet-send-addr" placeholder="Recipient LBC address" class="w-full bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm mb-2" />
+            <input id="wallet-send-addr" placeholder="Recipient LBC address" class="w-full bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm mb-2 text-[#e2e8f0]" />
             <div class="flex gap-2 mb-2">
-              <input id="wallet-send-amount" placeholder="Amount in LBC" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm" />
+              <input id="wallet-send-amount" placeholder="Amount in LBC" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-4 py-2 text-sm text-[#e2e8f0]" />
               <button id="wallet-send-btn" class="action-btn teal">Send</button>
             </div>
             <div class="text-xs text-[#64748b]">Estimated fee: <span id="wallet-tx-fee">0.0001</span> LBC</div>
@@ -743,7 +882,7 @@
               <div class="text-xs text-[#64748b] mt-0.5">Address of your local LBRY daemon or ReviveL Companion</div>
             </div>
             <input id="settings-daemon-input" 
-                   class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm font-mono focus:border-[#14b8a6] outline-none transition"
+                   class="w-full bg-[#1e2937] border border-[#334155] rounded-3xl px-5 py-3 text-sm font-mono focus:border-[#14b8a6] outline-none transition text-[#e2e8f0]"
                    placeholder="http://127.0.0.1:5279">
             <div class="text-xs text-[#14b8a6] mt-2">Auto-detected at <span class="font-mono">http://127.0.0.1:5279</span> when Companion is running.</div>
 
@@ -751,6 +890,19 @@
               <button id="settings-detect-btn" class="action-btn flex-1 justify-center bg-emerald-900 border-emerald-700 text-emerald-300 hover:bg-emerald-800">Re-Detect Companion</button>
               <button id="settings-save-btn" class="action-btn flex-1 justify-center teal">Save URL</button>
             </div>
+          </div>
+
+          <!-- Content Filter -->
+          <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-6">
+            <div class="mb-3">
+              <div class="text-sm font-semibold tracking-wide">Content Filter</div>
+              <div class="text-xs text-[#64748b] mt-0.5">Affects Feed, Latest, Search, and More to Watch lists everywhere in the extension.</div>
+            </div>
+            <label class="flex items-center gap-3 cursor-pointer select-none">
+              <input type="checkbox" id="settings-show-nsfw" class="w-4 h-4 accent-[#14b8a6] bg-[#1e2937] border border-[#334155] rounded">
+              <span class="text-sm">Show NSFW / adult content</span>
+            </label>
+            <div class="text-xs text-[#64748b] mt-1.5 pl-7">When off, hides content tagged with <code class="font-mono">mature</code> or <code class="font-mono">nsfw</code>.</div>
           </div>
 
           <!-- Protocol & Info -->

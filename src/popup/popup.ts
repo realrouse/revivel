@@ -1,9 +1,9 @@
 // ReviveL Popup — Premium UX
 // Large comfortable window, elegant spacing, in-popup settings, floating video player
 
-import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed, getClaimTimestamp, dedupClaims } from '../utils/lbryApi.js';
+import { resolveLbryUri, extractClaim, getPlayableUrl, searchLbryClaims, getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed, getClaimTimestamp, dedupClaims, isFutureDatedClaim } from '../utils/lbryApi.js';
 
-interface LbryItem { id: string; title: string; channel: string; thumbnail: string; duration: string; lbryUri: string; type: 'video'|'image'; timestamp: number; uploaded: string; isLocked: boolean; fee: string; staked: number; }
+interface LbryItem { id: string; title: string; channel: string; thumbnail: string; duration: string; lbryUri: string; type: 'video'|'image'; timestamp: number; uploaded: string; isLocked: boolean; fee: string; staked: number; description?: string; }
 interface VaultItem { id: string; title: string; description: string; imageData: string; lbryUri: string; channel: string; date: string }
 
 let feedItems: LbryItem[] = []
@@ -16,6 +16,12 @@ let feedHasMore = true
 let latestHasMore = true
 let isLoadingMoreFeed = false
 let isLoadingMoreLatest = false
+
+// View mode for the content lists (affects Feed and Latest)
+let listViewMode: 'list' | 'details' | 'small' | 'medium' | 'big' | 'huge' = 'medium'
+
+// Whether to show NSFW/adult content in lists
+let showNSFW = false
 
 // Fetch IDs prevent stale results from older fetches (e.g. public trending results arriving
 // after a Companion activation fetch, or interleaved calls) from polluting the lists.
@@ -95,7 +101,8 @@ function mapClaimToItem(claim: any): LbryItem {
     uploaded,
     isLocked,
     fee: feeStr,
-    staked
+    staked,
+    description: value.description || ''
   }
 }
 
@@ -160,20 +167,30 @@ async function fetchRealFeed(tab: 'feed' | 'latest', page = 1, append = false) {
       params.order_by = ['effective_amount'];
       if (!useCompanionLists) {
         params.fee_amount = '<=0';
-        params.not_tags = ['mature', 'nsfw'];
+        if (!showNSFW) {
+          params.not_tags = ['mature', 'nsfw'];
+        }
       }
     } else {
       // LATEST: ONLY date. NEVER stake sort. Real-time via newBlock.
       params.order_by = ['release_time'];
+      const nowSecForLatest = Math.floor(Date.now() / 1000)
+      params.release_time = `<=${nowSecForLatest + 86400 * 2}`
       if (!useCompanionLists) {
         params.fee_amount = '<=0';
-        params.not_tags = ['mature', 'nsfw'];
+        if (!showNSFW) {
+          params.not_tags = ['mature', 'nsfw'];
+        }
       }
     }
 
     const result = await searchLbryClaims(params)
     let rawItems = (result.items || []);
-    if (!useCompanionLists) {
+    // Filter out claims with future release_time (e.g. bogus year 8878 claims that pollute Latest on scroll)
+    rawItems = rawItems.filter((c: any) => !isFutureDatedClaim(c))
+
+    // Apply NSFW filter client-side (for companion mode, and as safety for public)
+    if (!showNSFW) {
       rawItems = rawItems.filter((c: any) => {
         const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
         return !tags.some((t: string) => t === 'mature' || t === 'nsfw');
@@ -186,12 +203,11 @@ async function fetchRealFeed(tab: 'feed' | 'latest', page = 1, append = false) {
       // Enforce stake sort for Feed (top first)
       items = items.sort((a, b) => (b.staked || 0) - (a.staked || 0))
     } else {
-      // Enforce date sort only for Latest
+      // Enforce date sort only for Latest. Drop future timestamps.
       const nowSec = Math.floor(Date.now() / 1000)
-      // Stricter recent window for "Latest" feel (load more can surface older)
-      const minLatestTs = nowSec - (86400 * 90)
+      const maxLatestTs = nowSec + 86400 * 2
       items = items
-        .filter((it: any) => it.timestamp > minLatestTs)
+        .filter((it: any) => it.timestamp > nowSec - 86400 * 90 && it.timestamp <= maxLatestTs)
         .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0))
     }
 
@@ -222,6 +238,8 @@ async function fetchRealFeed(tab: 'feed' | 'latest', page = 1, append = false) {
       } else {
         feedItems = items as LbryItem[]
       }
+      // Always re-sort by staked desc to guarantee Feed is 100% sorted by LBC staked
+      feedItems = feedItems.sort((a, b) => (b.staked || 0) - (a.staked || 0));
       feedHasMore = rawItems.length >= 20
       feedPage = page
     } else {
@@ -338,11 +356,13 @@ async function performRealSearch(query: string) {
     }
     if (!useCompanionLists) {
       params.fee_amount = '<=0';
-      params.not_tags = ['mature', 'nsfw'];
+      if (!showNSFW) {
+        params.not_tags = ['mature', 'nsfw'];
+      }
     }
     const result = await searchLbryClaims(params)
     let raw = (result.items || []);
-    if (!useCompanionLists) {
+    if (!showNSFW) {
       raw = raw.filter((c: any) => {
         const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
         return !tags.some((t: string) => t === 'mature' || t === 'nsfw');
@@ -473,13 +493,15 @@ function doRenderFeedItems() {
         <div class="py-6 text-center text-xs text-[#64748b]">
           Companion not running.<br>
           Restart your companion.<br>
-          Or do you want to switch to Public Mode?<br>
-          <button id="switch-to-public-btn" class="mt-2 action-btn teal text-xs px-3 py-1">Switch to Public Mode</button>
+          <div class="mt-2 flex justify-center items-center gap-2">
+            <button id="refresh-companion-btn" class="action-btn text-xs px-2 py-0.5" title="Check for Companion">↻</button>
+            <button id="switch-to-public-btn" class="action-btn teal text-xs px-3 py-1">Switch to Public Mode</button>
+          </div>
         </div>
       `;
-      const btn = c.querySelector('#switch-to-public-btn') as HTMLButtonElement | null;
-      if (btn) {
-        btn.onclick = () => {
+      const switchBtn = c.querySelector('#switch-to-public-btn') as HTMLButtonElement | null;
+      if (switchBtn) {
+        switchBtn.onclick = () => {
           chrome.storage.sync.set({ daemonUrl: null }, () => {
             chrome.runtime.sendMessage({ type: 'setDaemonUrl', url: null }, () => {
               feedHasError = false;
@@ -491,6 +513,52 @@ function doRenderFeedItems() {
               fetchRealFeed(tabToFetch);
             });
           });
+        };
+      }
+
+      const refreshBtn = c.querySelector('#refresh-companion-btn') as HTMLButtonElement | null;
+      if (refreshBtn) {
+        refreshBtn.onclick = async () => {
+          refreshBtn.disabled = true;
+          refreshBtn.textContent = '⟳';
+          try {
+            const status = await new Promise<any>(r => chrome.runtime.sendMessage({ type: 'getDaemonStatus' }, r));
+            const usingD = (status as any)?.using === 'daemon' || (status as any)?.isCompanion;
+            const ep = String((status as any)?.endpoint || '');
+            const isOnline = !!(status?.connected && (usingD || /127\.0\.0\.1|localhost/.test(ep)));
+
+            if (isOnline) {
+              feedHasError = false;
+              latestHasError = false;
+              feedErrorIsCompanion = false;
+              latestErrorIsCompanion = false;
+              noDaemonConnection = false;
+              const tabToFetch = (currentTab === 'feed' ? 'feed' : 'latest') as 'feed' | 'latest';
+              fetchRealFeed(tabToFetch);
+            } else {
+              const msg = document.createElement('div');
+              msg.style.color = '#f87171';
+              msg.style.marginTop = '6px';
+              msg.style.fontSize = '10px';
+              msg.textContent = "Can't find Companion";
+              refreshBtn.parentElement?.appendChild(msg);
+              setTimeout(() => {
+                if (msg.parentNode) msg.parentNode.removeChild(msg);
+              }, 2500);
+            }
+          } catch (e) {
+            const msg = document.createElement('div');
+            msg.style.color = '#f87171';
+            msg.style.marginTop = '6px';
+            msg.style.fontSize = '10px';
+            msg.textContent = "Can't find Companion";
+            refreshBtn.parentElement?.appendChild(msg);
+            setTimeout(() => {
+              if (msg.parentNode) msg.parentNode.removeChild(msg);
+            }, 2500);
+          }
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = '↻';
         };
       }
       return;
@@ -510,7 +578,7 @@ function doRenderFeedItems() {
   stopLoadingAnimation();
 
   const list = document.createElement('div')
-  list.className = 'content-grid'
+  list.className = `content-grid view-mode-${listViewMode}`
 
   items.forEach(it => {
     const row = document.createElement('div')
@@ -518,20 +586,53 @@ function doRenderFeedItems() {
     const stakedHtml = it.staked > 0.01 
       ? `<div class="text-[9px] text-emerald-400 mt-0.5">${it.staked.toLocaleString(undefined, {maximumFractionDigits: 0})} LBC staked</div>` 
       : '';
-    row.innerHTML = `
-      <img src="${it.thumbnail}" alt="">
-      <div class="p-2">
-        <div class="text-sm font-semibold leading-tight line-clamp-2">${it.title}</div>
-        <div class="flex items-start justify-between mt-1">
-          <div class="text-[10px] text-[#64748b] flex-1 min-w-0">
-            <div class="truncate">${it.channel}</div>
-            <div class="text-[9px] ${it.isLocked ? 'text-amber-500' : 'opacity-70'}">${it.isLocked ? `🔒 ${it.fee}` : it.uploaded}</div>
-            ${stakedHtml}
+
+    let inner = ''
+    if (listViewMode === 'list') {
+      inner = `
+        <div class="flex gap-2 p-1.5 items-center">
+          <img src="${it.thumbnail}" alt="" style="width:64px;height:36px;aspect-ratio:16/9;flex-shrink:0;border-radius:3px;object-fit:cover;">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold leading-tight line-clamp-1">${it.title}</div>
+            <div class="text-[9px] text-[#64748b] mt-px truncate">${it.channel} • ${it.isLocked ? `🔒 ${it.fee}` : it.uploaded} ${stakedHtml ? ' • ' + it.staked.toLocaleString() + ' LBC' : ''}</div>
           </div>
-          <button class="play-btn mt-0.5">Play</button>
+          <button class="play-btn">Play</button>
         </div>
-      </div>
-    `
+      `
+    } else if (listViewMode === 'details') {
+      // Details: smaller thumbnails + more detailed claim info
+      const desc = (it.description || '').slice(0, 180) + ((it.description || '').length > 180 ? '…' : '')
+      inner = `
+        <div class="flex gap-3 p-2">
+          <img src="${it.thumbnail}" alt="" style="width:100px;height:56.25px;aspect-ratio:16/9;flex-shrink:0;border-radius:4px;object-fit:cover;">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold leading-tight line-clamp-2">${it.title}</div>
+            <div class="text-[10px] text-[#64748b] mt-1">${it.channel} • ${it.isLocked ? `🔒 ${it.fee}` : it.uploaded}</div>
+            ${stakedHtml}
+            ${desc ? `<div class="text-[9px] text-[#64748b] mt-1.5 line-clamp-3">${desc}</div>` : ''}
+          </div>
+          <button class="play-btn mt-0.5 self-start">Play</button>
+        </div>
+      `
+    } else {
+      // Icon modes (small/medium/big/huge) - width 100% of card, CSS grid sizes the card, force 16:9
+      inner = `
+        <img src="${it.thumbnail}" alt="" style="width:100%; height:auto; aspect-ratio:16/9;">
+        <div class="p-2">
+          <div class="text-sm font-semibold leading-tight line-clamp-2">${it.title}</div>
+          <div class="flex items-start justify-between mt-1">
+            <div class="text-[10px] text-[#64748b] flex-1 min-w-0">
+              <div class="truncate">${it.channel}</div>
+              <div class="text-[9px] ${it.isLocked ? 'text-amber-500' : 'opacity-70'}">${it.isLocked ? `🔒 ${it.fee}` : it.uploaded}</div>
+              ${stakedHtml}
+            </div>
+            <button class="play-btn mt-0.5">Play</button>
+          </div>
+        </div>
+      `
+    }
+
+    row.innerHTML = inner
 
     row.querySelector('.play-btn')!.addEventListener('click', e => { e.stopPropagation(); playInOverlay(it.lbryUri) })
     row.addEventListener('click', () => playInOverlay(it.lbryUri))
@@ -583,7 +684,7 @@ async function renderWallet(c: HTMLElement) {
       <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-3">
         <div class="text-xs font-semibold mb-1.5">Receive LBC</div>
         <div class="flex gap-1.5 mb-1.5">
-          <input id="receive-address" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] font-mono" readonly />
+          <input id="receive-address" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] font-mono text-[#e2e8f0]" readonly />
           <button id="copy-address" class="action-btn text-xs px-2 py-0.5">Copy</button>
         </div>
         <button id="gen-address" class="action-btn text-xs px-2 py-0.5">New Addr</button>
@@ -596,9 +697,9 @@ async function renderWallet(c: HTMLElement) {
       <!-- Send -->
       <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-3">
         <div class="text-xs font-semibold mb-1.5">Send LBC</div>
-        <input id="send-address" placeholder="Recipient address" class="w-full bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] mb-1" />
+        <input id="send-address" placeholder="Recipient address" class="w-full bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] mb-1 text-[#e2e8f0]" />
         <div class="flex gap-1.5 mb-1">
-          <input id="send-amount" placeholder="Amount" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px]" />
+          <input id="send-amount" placeholder="Amount" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#e2e8f0]" />
           <button id="send-btn" class="action-btn teal text-xs px-2 py-0.5">Send</button>
         </div>
         <div class="text-[10px] text-[#64748b]">Est fee: <span id="tx-fee">0.0001</span> LBC</div>
@@ -865,6 +966,16 @@ function showSettings() {
         Full features require the <strong>ReviveL Companion</strong>.
       </div>
 
+      <!-- Content Filter (NSFW) -->
+      <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-3 mb-3">
+        <div class="text-[10px] font-medium text-[#64748b] mb-1.5">Content Filter</div>
+        <label class="flex items-center gap-2 cursor-pointer text-[11px]">
+          <input type="checkbox" id="popup-show-nsfw" class="w-3.5 h-3.5 accent-[#14b8a6]">
+          <span>Show NSFW / adult content</span>
+        </label>
+        <div class="text-[9px] text-[#64748b] mt-1 pl-5 leading-snug">Affects all video lists (Feed, Latest, Search). Off = hide mature/nsfw tags.</div>
+      </div>
+
       <!-- Wallet Config -->
       <div class="bg-[#111114] border border-[#27272a] rounded-2xl p-3">
         <div class="text-[10px] font-medium text-[#64748b] mb-1.5">Wallet Config</div>
@@ -1032,6 +1143,30 @@ function showSettings() {
     })
   }
 
+  // NSFW toggle in popup settings
+  const popupNsfw = document.getElementById('popup-show-nsfw') as HTMLInputElement | null
+  if (popupNsfw) {
+    popupNsfw.checked = !!showNSFW
+    popupNsfw.onchange = async () => {
+      const val = popupNsfw.checked
+      showNSFW = val
+      try {
+        await new Promise<void>(r => chrome.storage.local.set({ revivel_showNSFW: val }, () => r()))
+      } catch (_) {}
+      // Refresh the active list data with new filter (so Done shows updated results)
+      try {
+        feedItems = []
+        latestItems = []
+        feedPage = 1
+        latestPage = 1
+        feedHasMore = true
+        latestHasMore = true
+        const which = (currentTab === 'feed' ? 'feed' : 'latest') as 'feed' | 'latest'
+        await fetchRealFeed(which)
+      } catch (_) {}
+    }
+  }
+
   // Wallet config in settings
   const wCreate = document.getElementById('wallet-create-btn')
   const wClose = document.getElementById('wallet-close-btn')
@@ -1107,6 +1242,12 @@ async function initPopup() {
   initTailwind()
   await loadVault()
 
+  // Load NSFW preference
+  try {
+    const saved: any = await new Promise(r => chrome.storage.local.get('revivel_showNSFW', r))
+    showNSFW = !!saved.revivel_showNSFW
+  } catch (_) {}
+
   // Always fetch fresh for feed/latest to avoid stale data from previous configs/sessions
   feedItems = [];
   latestItems = [];
@@ -1140,6 +1281,9 @@ async function initPopup() {
         if (tab !== 'vault' && tab !== 'wallet') {
           fetchRealFeed( (currentTab as any) === 'feed' ? 'feed' : 'latest')
         }
+        // update view opts visibility
+        if (popupOpts) popupOpts.style.display = (currentTab === 'feed' || currentTab === 'new') ? '' : 'none'
+        if (popupModeSel) popupModeSel.value = listViewMode
       }
     })
   })
@@ -1187,6 +1331,24 @@ async function initPopup() {
   // Final render (in case anything was missed)
   updateTabs()
   renderContent()
+
+  // Wire view mode for popup lists (feed/new)
+  const popupModeSel = document.getElementById('popup-view-mode') as HTMLSelectElement | null
+  const popupOpts = document.getElementById('popup-view-options')
+  if (popupModeSel) {
+    popupModeSel.addEventListener('change', () => {
+      listViewMode = popupModeSel.value as any
+      if (currentTab === 'feed' || currentTab === 'new') {
+        doRenderFeedItems()
+      }
+    })
+  }
+  // Show options only on list tabs
+  const updatePopupViewOpts = () => {
+    if (popupOpts) popupOpts.style.display = (currentTab === 'feed' || currentTab === 'new') ? '' : 'none'
+    if (popupModeSel) popupModeSel.value = listViewMode
+  }
+  updatePopupViewOpts()
 
   // Fetch real LBRY content for feeds and latest (Feed stake sorted, Latest date only)
   feedPage = 1; latestPage = 1

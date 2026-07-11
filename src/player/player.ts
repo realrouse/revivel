@@ -3,7 +3,7 @@ import {
   resolveLbryUri, extractClaim, getPlayableUrl, buildPublicStreamUrl, getOdyseeEmbedUrl, searchLbryClaims, 
   getDaemonStatus, setDaemonUrl,
   getWalletBalance, getReceiveAddress, sendLBC, getTransactions, createWallet, closeWallet, deleteWallet, getWalletSeed,
-  getClaimTimestamp, getRandomSearchWords, dedupClaims, WORD_LIBRARY_LABELS, getLibraryWords
+  getClaimTimestamp, getRandomSearchWords, dedupClaims, WORD_LIBRARY_LABELS, getLibraryWords, isFutureDatedClaim
 } from '../utils/lbryApi.js'
 
 const urlParams = new URLSearchParams(location.search)
@@ -30,8 +30,16 @@ let searchHasMore = true
 let isLoadingMoreFeed = false
 let isLoadingMoreLatest = false
 let isLoadingMoreSearch = false
-let currentFeedFilter: 'all' | 'month' | 'week' | 'high' | 'veryhigh' = 'all'
+let currentFeedFilter: 'all' | 'month' | 'week' | 'random' = 'all'
+let currentRandomTopN: 100 | 500 | 1000 | 5000 = 100
+let randomFeedPool: any[] = []
 let currentWordLibrary = 'general'
+
+// View mode for list grids (applies to Feed, Latest, Search)
+let listViewMode: 'list' | 'details' | 'small' | 'medium' | 'big' | 'huge' = 'medium'
+
+// Whether to show NSFW/adult content in lists
+let showNSFW = false
 
 // Fetch IDs to discard results from stale/older concurrent fetches (prevents videos from old public fetches
 // overwriting fresh Companion results or vice versa when mode switches).
@@ -43,6 +51,15 @@ let searchFetchId = 0
 let feedPrefetchedItems: any[] = []
 let feedPrefetchPage = 0
 let isPrefetchingFeed = false
+
+function randomSample<T>(arr: T[], k: number): T[] {
+  const copy = [...arr]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy.slice(0, k)
+}
 
 // Listen for new blockchain blocks from background to refresh Latest
 chrome.runtime.onMessage.addListener((msg: any) => {
@@ -77,7 +94,7 @@ function showView(view: string) {
   }
 
   if (view === 'feed') {
-    feedPage = 1; feedHasMore = true; isLoadingMoreFeed = false; currentFeedFilter = 'all'
+    feedPage = 1; feedHasMore = true; isLoadingMoreFeed = false; currentFeedFilter = 'all'; currentRandomTopN = 100; randomFeedPool = []
     feedPrefetchedItems = []
     feedPrefetchPage = 0
     loadFeed()
@@ -154,6 +171,15 @@ async function updateStatus() {
 // ===== Core Video Playback (60% centered) =====
 async function loadVideo(uri: string, autoPlay: boolean = true) {
   currentUri = uri
+
+  // Always clear previous media synchronously. This prevents the old video/embed
+  // from being visible when we switch into the Player tab from a list.
+  clearPlayerMedia()
+
+  // Give immediate visual feedback in the player area itself (before the async resolve finishes)
+  const overlayForLoading = document.getElementById('video-overlay')!
+  overlayForLoading.innerHTML = `<div class="text-center px-4 text-sm">Loading video…</div>`
+
   const metaEl = document.getElementById('meta')!
   const descEl = document.getElementById('video-desc')!
 
@@ -407,7 +433,32 @@ function showEmbed(embedUrl: string) {
   overlay.appendChild(iframe)
 }
 
-// ===== More to Watch — mix of (5 from top 100 staked, 5 from last 100 latest, 5 from top staked of a random word) =====
+// Immediately clear any previously playing video, HLS source, or embedded iframe.
+// Call this before revealing the player view when switching to a *different* video
+// so the user never sees the old content flash.
+function clearPlayerMedia() {
+  const video = document.getElementById('video-player') as HTMLVideoElement | null
+  const overlay = document.getElementById('video-overlay') as HTMLElement | null
+
+  if (video) {
+    try { video.pause() } catch (_) {}
+    video.removeAttribute('src')
+    // Force the media element to drop its current resource
+    try { video.load() } catch (_) {}
+    video.style.display = 'none'
+  }
+
+  if (overlay) {
+    overlay.innerHTML = ''
+    overlay.style.background = ''
+    overlay.classList.remove('hidden')
+    overlay.classList.add('flex')
+  }
+
+  currentStreamUrl = null
+}
+
+// ===== More to Watch — mix of (random 16 from top ~300 staked via multi-page, 16 from word-matched, 16 from recent) =====
 async function loadMoreToWatch(excludeUri: string) {
   const grid = document.getElementById('more-grid')!
   grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Loading mixed suggestions…</div>`
@@ -428,15 +479,39 @@ async function loadMoreToWatch(excludeUri: string) {
       } catch (_) {}
     }
 
-    const base = { claim_type: 'stream', stream_types: ['video'], has_source: true, page_size: 100 }
-    const pubFilters = useCompanion ? {} : { fee_amount: '<=0', not_tags: ['mature', 'nsfw'] }
+    const base = { claim_type: 'stream', stream_types: ['video'], has_source: true, page_size: 50 }
+    const pubFilters = useCompanion ? {} : { fee_amount: '<=0', ...(showNSFW ? {} : { not_tags: ['mature', 'nsfw'] }) }
 
-    // 1) Top 100 staked (highest LBC support)
-    const stakeRes = await searchLbryClaims({ ...base, ...pubFilters, order_by: ['effective_amount'] })
-    let topStaked = (stakeRes.items || []).slice(0, 100)
+    const nowSec = Math.floor(Date.now() / 1000)
+    const maxReleaseTime = nowSec + 86400 * 2
 
-    // 2) Last ~100 by time (latest videos)
-    const timeRes = await searchLbryClaims({ ...base, ...pubFilters, order_by: ['release_time'], page_size: 100 })
+    // 1) Fetch a broad top-staked pool by accumulating multiple pages (to reach beyond the ~40 >100k videos
+    // and get true variety from the top ~300 highest staked, including many below 100k).
+    // Single large page_size may be capped by the public proxy; pagination gets the next in effective_amount order.
+    let topStaked: any[] = []
+    const seenStake = new Set<string>()
+    for (let p = 1; p <= 6; p++) {  // up to ~300
+      const pageParams: any = { ...base, ...pubFilters, order_by: ['effective_amount'], page: p, page_size: 50 }
+      try {
+        const stakeRes = await searchLbryClaims(pageParams)
+        const pageItems = (stakeRes.items || [])
+        for (const c of pageItems) {
+          const u = c.canonical_url || `lbry://${c.name}`
+          if (!seenStake.has(u)) {
+            seenStake.add(u)
+            topStaked.push(c)
+          }
+        }
+        if (pageItems.length < 50) break
+      } catch (_) {
+        break
+      }
+    }
+
+    // 2) Last ~100 by time (latest videos) - only non-future release_time so we get actual recent
+    const timeParams: any = { ...base, ...pubFilters, order_by: ['release_time'], page_size: 100 }
+    timeParams.release_time = `<=${maxReleaseTime}`
+    const timeRes = await searchLbryClaims(timeParams)
     let lastVideos = (timeRes.items || []).slice(0, 100)
 
     // 3) Pick a random popular word and get top staked matching it
@@ -451,7 +526,8 @@ async function loadMoreToWatch(excludeUri: string) {
       const u = c.canonical_url || `lbry://${c.name}`
       if (u === excludeUri || seen.has(u)) return false
       const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
-      if (tags.some((t: string) => t === 'mature' || t === 'nsfw')) return false
+      if (!showNSFW && tags.some((t: string) => t === 'mature' || t === 'nsfw')) return false
+      if (isFutureDatedClaim(c)) return false
       seen.add(u)
       return true
     })
@@ -460,68 +536,96 @@ async function loadMoreToWatch(excludeUri: string) {
     lastVideos = clean(lastVideos)
     wordStaked = clean(wordStaked)
 
+    // Ensure relevance for the random word category
+    const lowerWord = randomWord.toLowerCase()
+    wordStaked = wordStaked.filter((c: any) => {
+      const t = (c.value?.title || '').toLowerCase()
+      const d = (c.value?.description || '').toLowerCase()
+      return t.includes(lowerWord) || d.includes(lowerWord)
+    })
+
+    // Ensure top staked and word sections are sorted by stake desc (in case cleaning or fetch order needs it)
+    topStaked = topStaked.sort((a, b) => {
+      const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+      const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+      return be - ae
+    })
+    wordStaked = wordStaked.sort((a, b) => {
+      const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+      const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+      return be - ae
+    })
+
     // For latest pool use date sort (never stake)
     lastVideos = lastVideos
       .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
       .sort((a: any, b: any) => b.ts - a.ts)
       .map(x => x.c)
 
-    // Pick 5 from each (prefer top for stake pools)
-    const pick = (arr: any[], n: number) => arr.slice(0, n)
-    let mix: any[] = [
-      ...pick(topStaked, 5),
-      ...pick(lastVideos, 5),
-      ...pick(wordStaked, 5)
-    ]
+    grid.innerHTML = ''
+    grid.style.display = 'block'  // ensure categories stack as rows, not grid columns
 
-    // Final dedup + shuffle lightly for nice mix feel, limit 15
-    seen.clear()
-    mix = mix.filter((c: any) => {
-      const u = c.canonical_url || `lbry://${c.name}`
-      if (seen.has(u)) return false
-      seen.add(u)
-      return true
-    }).slice(0, 15)
+    // Helper to render a categorized section
+    function renderSection(title: string, claims: any[], n: number) {
+      const toShow = claims.slice(0, n)
+      const header = document.createElement('div')
+      header.className = 'text-xs text-[#64748b] mb-1 mt-2 font-medium'
+      header.textContent = `${title} (${toShow.length} videos)`
+      grid.appendChild(header)
 
-    // If we have less than desired due to overlap, pad with more from staked
-    if (mix.length < 12) {
-      const more = topStaked.filter((c: any) => !seen.has(c.canonical_url || `lbry://${c.name}`)).slice(0, 12 - mix.length)
-      mix = mix.concat(more)
+      const sub = document.createElement('div')
+      sub.className = 'grid-more'
+      toShow.forEach((claim: any) => {
+        const value = claim.value || {}
+        const thumb = value.thumbnail?.url || 'https://picsum.photos/id/1015/160/90'
+        const title = value.title || claim.name || 'Untitled'
+        const channel = claim.signing_channel?.name || '@unknown'
+        const u = claim.canonical_url || `lbry://${claim.name}`
+        const timestamp = getClaimTimestamp(claim)
+        const uploaded = formatUploadTime(timestamp)
+        const fee = value.fee || value.stream?.fee || null
+        const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0)
+        const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : ''
+        const metaLine = isLocked ? `🔒 ${feeStr}` : `${channel}${uploaded ? ` • ${uploaded}` : ''}`
+
+        const cAmt = parseFloat(claim.amount || 0)
+        const sAmt = parseFloat(claim.meta?.support_amount || 0)
+        let stk = cAmt + sAmt || parseFloat(claim.meta?.effective_amount || 0)
+        const stkLine = stk > 0.01 
+          ? `<div class="text-[9px] text-emerald-400 mt-0.5">${stk.toLocaleString(undefined, {maximumFractionDigits: 0})} LBC staked</div>` 
+          : '';
+
+        const card = document.createElement('div')
+        card.className = 'small-card'
+        card.innerHTML = `
+          <img src="${thumb}" alt="">
+          <div class="meta">
+            <div class="title">${title}</div>
+            <div class="channel">${metaLine}</div>
+            ${stkLine}
+          </div>
+        `
+        card.onclick = () => { initialTitle = title; clearPlayerMedia(); showView('player'); loadVideo(u) }
+        sub.appendChild(card)
+      })
+      grid.appendChild(sub)
     }
 
-    grid.innerHTML = ''
-    mix.forEach((claim: any) => {
-      const value = claim.value || {}
-      const thumb = value.thumbnail?.url || 'https://picsum.photos/id/1015/160/90'
-      const title = value.title || claim.name || 'Untitled'
-      const channel = claim.signing_channel?.name || '@unknown'
-      const u = claim.canonical_url || `lbry://${claim.name}`
-      const timestamp = getClaimTimestamp(claim)
-      const uploaded = formatUploadTime(timestamp)
-      const fee = value.fee || value.stream?.fee || null
-      const isLocked = !!(fee && fee.amount && parseFloat(fee.amount) > 0)
-      const feeStr = isLocked ? `${parseFloat(fee.amount).toFixed(3)} LBC` : ''
-      const metaLine = isLocked ? `🔒 ${feeStr}` : `${channel}${uploaded ? ` • ${uploaded}` : ''}`
+    // For "From Top 300": randomly sample 16 from the (cleaned) accumulated top ~300 staked pool (via pagination).
+    // This reaches lower-stake videos (below 100k) that a single capped page_size would miss.
+    function randomSample(arr: any[], k: number): any[] {
+      const copy = [...arr]
+      for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[copy[i], copy[j]] = [copy[j], copy[i]]
+      }
+      return copy.slice(0, k)
+    }
+    const highStakedSample = topStaked.length > 16 ? randomSample(topStaked, 16) : topStaked
 
-      // show stake hint if high
-      const cAmt = parseFloat(claim.amount || 0)
-      const sAmt = parseFloat(claim.meta?.support_amount || 0)
-      let stk = cAmt + sAmt || parseFloat(claim.meta?.effective_amount || 0)
-      const stkLine = stk > 1000 ? `<div class="text-[9px] text-emerald-400">${Math.floor(stk).toLocaleString()} LBC</div>` : ''
-
-      const card = document.createElement('div')
-      card.className = 'small-card'
-      card.innerHTML = `
-        <img src="${thumb}" alt="">
-        <div class="meta">
-          <div class="title">${title}</div>
-          <div class="channel">${metaLine}</div>
-          ${stkLine}
-        </div>
-      `
-      card.onclick = () => { showView('player'); loadVideo(u) }
-      grid.appendChild(card)
-    })
+    renderSection('From Top 300', highStakedSample, 16)
+    renderSection(`Related to "${randomWord}" (high support matches)`, wordStaked, 16)
+    renderSection('Latest Uploads', lastVideos, 16)
   } catch (e) {
     console.warn('More to watch mix failed', e)
     grid.innerHTML = `<div class="col-span-full text-xs text-[#64748b]">Could not load suggestions.</div>`
@@ -537,8 +641,12 @@ async function loadFeed(replace = true) {
     feedItems = []
     feedPage = 1
     feedHasMore = true
+    randomFeedPool = []
     feedPrefetchedItems = []
     feedPrefetchPage = 0
+    if (currentFeedFilter !== 'random') {
+      randomFeedPool = []
+    }
   }
   statusEl.textContent = ''
 
@@ -557,62 +665,157 @@ async function loadFeed(replace = true) {
       } catch (_) {}
     }
 
-    const params: any = {
+    let items: any[] = []
+    let lastFetchCount = 20
+    const isRandom = currentFeedFilter === 'random'
+
+    // Base params (used for random pagination and normal feed)
+    const baseParams: any = {
       claim_type: 'stream',
       stream_types: ['video'],
       has_source: true,
-      page: feedPage,
-      page_size: 20,  // first 20 for LCP, then prefetch next 20
-      order_by: ['effective_amount'],   // ALWAYS stake order for Feed (highest first)
+      order_by: ['effective_amount'],
     }
     if (!useCompanion) {
-      params.fee_amount = '<=0'
-      params.not_tags = ['mature', 'nsfw']
+      baseParams.fee_amount = '<=0'
+      if (!showNSFW) {
+        baseParams.not_tags = ['mature', 'nsfw']
+      }
     }
 
-    const res = await searchLbryClaims(params)
-    let items = (res.items || [])
-    if (!useCompanion) {
+    if (isRandom) {
+      if (replace) {
+        // For random replace: collect the full top currentRandomTopN staked items via BATCHED concurrent pagination.
+        // Then shuffle the pool. "More" will consume from the remaining shuffled pool.
+        const targetN = currentRandomTopN
+        let collected: any[] = []
+        const seenPool = new Set<string>()
+        const cps = useCompanion ? 100 : 50
+        const maxPages = Math.ceil(targetN / cps) + 10
+        const batchSize = 5
+        for (let startP = 1; startP <= maxPages; startP += batchSize) {
+          const batchPromises: Promise<any>[] = []
+          for (let i = 0; i < batchSize && (startP + i) <= maxPages; i++) {
+            const p = startP + i
+            const cpparams: any = { ...baseParams, page: p, page_size: cps }
+            batchPromises.push(
+              searchLbryClaims(cpparams).catch(() => ({ items: [] }))
+            )
+          }
+          const results = await Promise.all(batchPromises)
+          let addedInBatch = 0
+          for (const cres of results) {
+            let citems = (cres.items || [])
+            if (!showNSFW) {
+              citems = citems.filter((c: any) => {
+                const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+                return !tags.some(t => t === 'mature' || t === 'nsfw')
+              })
+            }
+            citems = citems.sort((a: any, b: any) => {
+              const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+              const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+              return be - ae
+            })
+            for (const c of citems) {
+              const u = c.canonical_url || `lbry://${c.name}`
+              if (!seenPool.has(u)) {
+                seenPool.add(u)
+                collected.push(c)
+                addedInBatch++
+                if (collected.length >= targetN) break
+              }
+            }
+            if (collected.length >= targetN) break
+          }
+          lastFetchCount = addedInBatch
+          if (addedInBatch < 10) break
+          if (collected.length >= targetN) break
+        }
+        // final sort
+        collected.sort((a: any, b: any) => {
+          const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+          const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+          return be - ae
+        })
+        let pool = collected.slice(0, targetN)
+        randomFeedPool = randomSample(pool, pool.length)  // full shuffle for random order
+        items = randomFeedPool.splice(0, 20)
+      } else {
+        // append: take next chunk from the pre-shuffled remaining pool
+        items = randomFeedPool.splice(0, 20)
+        lastFetchCount = items.length
+      }
+    } else {
+      // Normal (non-random) path: fetch current page from server
+      const params: any = {
+        ...baseParams,
+        page: feedPage,
+        page_size: 20,
+      }
+
+      const res = await searchLbryClaims(params)
+      items = (res.items || [])
+      if (!showNSFW) {
+        items = items.filter((c: any) => {
+          const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
+          return !tags.some(t => t === 'mature' || t === 'nsfw')
+        })
+      }
+      items = items.sort((a: any, b: any) => {
+        const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
+        const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
+        return be - ae
+      })
+      lastFetchCount = (res.items || []).length
+    }
+
+    // Apply time-based customize filter (only for non-random; random already drew from the pool)
+    if (!isRandom) {
+      const now = Math.floor(Date.now() / 1000)
+      const day = 86400
       items = items.filter((c: any) => {
-        const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
-        return !tags.some(t => t === 'mature' || t === 'nsfw')
+        const ts = getClaimTimestamp(c)
+        const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
+        if (currentFeedFilter === 'month') return ts > now - (30 * day)
+        if (currentFeedFilter === 'week') return ts > now - (7 * day)
+        return true
       })
     }
-
-    // Client-side sort by staked (robustness for both daemon + public proxy)
-    items = items.sort((a: any, b: any) => {
-      const be = parseFloat(b.meta?.effective_amount || 0) + parseFloat(b.amount || 0)
-      const ae = parseFloat(a.meta?.effective_amount || 0) + parseFloat(a.amount || 0)
-      return be - ae
-    })
-
-    // Apply current customize filter (client side on the page results)
-    const now = Math.floor(Date.now() / 1000)
-    const day = 86400
-    items = items.filter((c: any) => {
-      const ts = getClaimTimestamp(c)
-      const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
-      if (currentFeedFilter === 'month') return ts > now - (30 * day)
-      if (currentFeedFilter === 'week') return ts > now - (7 * day)
-      if (currentFeedFilter === 'high') return stk >= 100000
-      if (currentFeedFilter === 'veryhigh') return stk >= 500000
-      return true
-    })
 
     if (myId !== feedFetchId) return
 
     if (replace) {
-      feedItems = items.slice(0, 20)
+      if (isRandom) {
+        feedItems = items
+      } else {
+        feedItems = items.slice(0, 20)
+      }
     } else {
-      feedItems = dedupClaims(feedItems, items)
+      if (isRandom) {
+        feedItems = feedItems.concat(items)
+      } else {
+        feedItems = dedupClaims(feedItems, items)
+      }
+    }
+
+    // Re-sort only for non-random (random keeps the shuffled order)
+    if (!isRandom) {
+      feedItems = feedItems.sort((a, b) => (b.staked || 0) - (a.staked || 0))
     }
 
     // Render
     renderClaimGrid(feedItems, grid)
 
-    // Update hasMore
-    feedHasMore = (res.items || []).length >= 20
-    statusEl.textContent = feedHasMore ? 'Scroll for more staked claims…' : 'End of feed results.'
+    // Update hasMore and status
+    if (isRandom) {
+      feedHasMore = randomFeedPool.length > 0
+      const endMsg = feedHasMore ? `Scroll for more random from top ${currentRandomTopN}` : `End of random sample from top ${currentRandomTopN}`
+      statusEl.textContent = feedHasMore ? `Scroll for more random from top ${currentRandomTopN}` : endMsg
+    } else {
+      feedHasMore = lastFetchCount >= 20
+      statusEl.textContent = feedHasMore ? 'Scroll for more staked claims…' : 'End of feed results.'
+    }
 
     // Wire customize buttons (once)
     wireFeedFilters()
@@ -620,8 +823,8 @@ async function loadFeed(replace = true) {
     // Render side random words (left + right) - 60 words, current library, sticky
     renderFeedSideWords()
 
-    // After first 20 loaded and displayed, background-load the next 20
-    if (replace && feedPage === 1 && !isPrefetchingFeed) {
+    // Prefetch only for non-random
+    if (replace && feedPage === 1 && !isPrefetchingFeed && !isRandom) {
       prefetchNextFeedItems()
     }
   } catch (e) {
@@ -647,6 +850,34 @@ function wireFeedFilters() {
       // if no query, perhaps do nothing or load initial
     }
   })
+
+  // Wire random dropdown options (hover dropdown on Random button)
+  document.querySelectorAll('.random-option').forEach((opt: any) => {
+    if (!opt._wired) {
+      opt._wired = true
+      opt.addEventListener('click', (e: Event) => {
+        e.stopImmediatePropagation()
+        const n = parseInt(opt.dataset.n || '100', 10) as any
+        currentRandomTopN = n
+        currentFeedFilter = 'random'
+        // trigger reload for current view
+        if (currentView === 'feed') {
+          loadFeed(true)
+        } else if (currentView === 'search') {
+          const inp = document.getElementById('search-input') as HTMLInputElement | null
+          const q = (inp && inp.value.trim()) || ''
+          if (q.length >= 2) {
+            const run = (window as any).__revivelRunSearch
+            if (run) run(q, true)
+          }
+        }
+        // optionally hide dropdown by moving mouse, but hover will handle
+      })
+    }
+    // always update active
+    const n = parseInt(opt.dataset.n || '0', 10)
+    opt.classList.toggle('active', currentFeedFilter === 'random' && n === currentRandomTopN)
+  })
 }
 
 function wireFilterContainer(containerId: string, onFilter: () => void) {
@@ -657,8 +888,11 @@ function wireFilterContainer(containerId: string, onFilter: () => void) {
     if ((btn as any)._wired) return
     ;(btn as any)._wired = true
     btn.addEventListener('click', () => {
-      const f = (btn.dataset.filter || 'all') as any
+      const f = (btn.dataset.filter || 'all') as 'all' | 'month' | 'week' | 'random'
       if (f === currentFeedFilter) return
+      if (f !== 'random') {
+        randomFeedPool = []
+      }
       currentFeedFilter = f
       onFilter()
     })
@@ -780,11 +1014,13 @@ function showWordLibrarySelector() {
 async function loadMoreFeed() {
   if (!feedHasMore || isLoadingMoreFeed || currentView !== 'feed') return
 
-  // If we have prefetched the next page, use it immediately for instant scroll
-  if (feedPrefetchedItems.length > 0 && feedPrefetchPage === feedPage + 1) {
+  // If we have prefetched the next page, use it immediately for instant scroll (skip for random)
+  if (feedPrefetchedItems.length > 0 && feedPrefetchPage === feedPage + 1 && currentFeedFilter !== 'random') {
     isLoadingMoreFeed = true
     const statusEl = document.getElementById('feed-more-status')!
     feedItems = dedupClaims(feedItems, feedPrefetchedItems)
+    // Always re-sort by staked desc to guarantee Feed is 100% sorted by LBC staked
+    feedItems = feedItems.sort((a, b) => (b.staked || 0) - (a.staked || 0));
     renderClaimGrid(feedItems, document.getElementById('feed-grid')!)
     feedPage = feedPrefetchPage
     feedPrefetchedItems = []
@@ -798,7 +1034,21 @@ async function loadMoreFeed() {
 
   isLoadingMoreFeed = true
   const statusEl = document.getElementById('feed-more-status')!
-  statusEl.textContent = 'Loading more staked…'
+  statusEl.textContent = 'Loading more…'
+
+  if (currentFeedFilter === 'random') {
+    const more = randomFeedPool.splice(0, 20)
+    if (more.length > 0) {
+      feedItems = feedItems.concat(more)
+      renderClaimGrid(feedItems, document.getElementById('feed-grid')!)
+    }
+    feedHasMore = randomFeedPool.length > 0
+    const endMsg = feedHasMore ? `Scroll for more random from top ${currentRandomTopN}` : `End of random sample from top ${currentRandomTopN}`
+    statusEl.textContent = endMsg
+    isLoadingMoreFeed = false
+    return
+  }
+
   feedPage += 1
   try {
     await loadFeed(false /* append */)
@@ -810,7 +1060,7 @@ async function loadMoreFeed() {
 }
 
 async function prefetchNextFeedItems() {
-  if (isPrefetchingFeed || !feedHasMore || feedPrefetchedItems.length > 0) return
+  if (isPrefetchingFeed || !feedHasMore || feedPrefetchedItems.length > 0 || currentFeedFilter === 'random') return
   isPrefetchingFeed = true
   const nextPage = feedPage + 1
   try {
@@ -838,12 +1088,14 @@ async function prefetchNextFeedItems() {
     }
     if (!useCompanion) {
       params.fee_amount = '<=0'
-      params.not_tags = ['mature', 'nsfw']
+      if (!showNSFW) {
+        params.not_tags = ['mature', 'nsfw']
+      }
     }
 
     const res = await searchLbryClaims(params)
     let items = (res.items || [])
-    if (!useCompanion) {
+    if (!showNSFW) {
       items = items.filter((c: any) => {
         const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
         return !tags.some(t => t === 'mature' || t === 'nsfw')
@@ -863,8 +1115,6 @@ async function prefetchNextFeedItems() {
       const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
       if (currentFeedFilter === 'month') return ts > now - (30 * day)
       if (currentFeedFilter === 'week') return ts > now - (7 * day)
-      if (currentFeedFilter === 'high') return stk >= 100000
-      if (currentFeedFilter === 'veryhigh') return stk >= 500000
       return true
     })
 
@@ -912,25 +1162,27 @@ async function loadLatest(replace = true) {
       page_size: 40,
       order_by: ['release_time'],   // time order from server
     }
-    if (!useCompanion) {
-      params.fee_amount = '<=0'
-      params.not_tags = ['mature', 'nsfw']
-    }
+    const nowSecForLatest = Math.floor(Date.now() / 1000)
+    params.release_time = `<=${nowSecForLatest + 86400 * 2}`
+    // Do not apply fee/not_tags for Latest to get more recent uploads (even in public mode)
 
     const res = await searchLbryClaims(params)
     let candidates = (res.items || [])
-    if (!useCompanion) {
+    if (!showNSFW) {
       candidates = candidates.filter((c: any) => {
         const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
         return !tags.some(t => t === 'mature' || t === 'nsfw')
       })
     }
+    // Filter out claims with future release_time (e.g. bogus year 8878 claims)
+    candidates = candidates.filter((c: any) => !isFutureDatedClaim(c))
 
     // STRICT: only date sort. Never touch stake ordering for Latest.
-    // Use reliable timestamp, drop obvious garbage.
+    // Use reliable timestamp, drop obvious garbage AND future timestamps.
+    const nowSec = Math.floor(Date.now() / 1000)
     candidates = candidates
       .map((c: any) => ({ c, ts: getClaimTimestamp(c) }))
-      .filter((x: any) => x.ts > 0)
+      .filter((x: any) => x.ts > nowSec - 86400 * 90 && x.ts <= nowSec + 86400 * 2)
       .sort((x: any, y: any) => y.ts - x.ts)
       .map(x => x.c)
 
@@ -991,8 +1243,12 @@ function formatUploadTime(timestamp: number): string {
 }
 
 function renderClaimGrid(items: any[], container: HTMLElement) {
+  // Apply view mode class for CSS styling
+  container.classList.remove('view-mode-list', 'view-mode-details', 'view-mode-small', 'view-mode-medium', 'view-mode-big', 'view-mode-huge')
+  container.classList.add(`view-mode-${listViewMode}`)
   container.innerHTML = ''
-  items.forEach((claim: any) => {
+
+  items.forEach((claim: any, idx: number) => {
     const value = claim.value || {}
     const thumb = value.thumbnail?.url || 'https://picsum.photos/id/1015/160/90'
     const title = value.title || claim.name || 'Untitled'
@@ -1021,16 +1277,52 @@ function renderClaimGrid(items: any[], container: HTMLElement) {
 
     const card = document.createElement('div')
     card.className = 'claim-card'
-    const imgHtml = `<img src="${thumb}" ${container.children.length < 2 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' } width="190" height="107">`
-    card.innerHTML = `
-      ${imgHtml}
-      <div class="p-3">
-        <div class="text-sm font-semibold leading-tight line-clamp-2">${title}</div>
-        <div class="text-xs text-[#64748b] mt-1">${metaLine}</div>
-        ${stakedLine}
-      </div>
-    `
-    card.onclick = () => { showView('player'); loadVideo(u) }
+
+    let imgHtml = ''
+    const priority = idx < 2 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"'
+
+    if (listViewMode === 'list') {
+      // Compact list row
+      imgHtml = `<img src="${thumb}" ${priority} style="width:64px;height:36px;aspect-ratio:16/9;" class="flex-shrink-0 rounded">`
+      card.innerHTML = `
+        <div class="flex gap-2 p-2 items-center">
+          ${imgHtml}
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold leading-tight line-clamp-1">${title}</div>
+            <div class="text-[10px] text-[#64748b] mt-0.5 truncate">${metaLine} ${stakedLine ? ' • ' + stakedLine.replace(/<[^>]+>/g,'') : ''}</div>
+          </div>
+        </div>
+      `
+    } else if (listViewMode === 'details') {
+      // Details: smaller thumbnails + more detailed info
+      imgHtml = `<img src="${thumb}" ${priority} style="width:120px;height:67.5px;aspect-ratio:16/9;" class="flex-shrink-0 rounded">`
+      const desc = (value.description || '').slice(0, 200) + ((value.description || '').length > 200 ? '…' : '')
+      card.innerHTML = `
+        <div class="flex gap-3 p-3">
+          ${imgHtml}
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-semibold leading-tight line-clamp-2">${title}</div>
+            <div class="text-xs text-[#64748b] mt-1">${metaLine}</div>
+            ${stakedLine}
+            ${desc ? `<div class="text-[10px] text-[#64748b] mt-1.5 line-clamp-3">${desc}</div>` : ''}
+          </div>
+        </div>
+      `
+    } else {
+      // Icon modes (small/medium/big/huge) use vertical card
+      // Let CSS grid control size, force 16:9
+      imgHtml = `<img src="${thumb}" ${priority} style="width:100%; height:auto; aspect-ratio:16/9;">`
+      card.innerHTML = `
+        ${imgHtml}
+        <div class="p-3">
+          <div class="text-sm font-semibold leading-tight line-clamp-2">${title}</div>
+          <div class="text-xs text-[#64748b] mt-1">${metaLine}</div>
+          ${stakedLine}
+        </div>
+      `
+    }
+
+    card.onclick = () => { initialTitle = title; clearPlayerMedia(); showView('player'); loadVideo(u) }
     container.appendChild(card)
   })
 }
@@ -1082,12 +1374,14 @@ function setupSearch() {
       }
       if (!useCompanion) {
         sparams.fee_amount = '<=0'
-        sparams.not_tags = ['mature', 'nsfw']
+        if (!showNSFW) {
+          sparams.not_tags = ['mature', 'nsfw']
+        }
       }
 
       const res = await searchLbryClaims(sparams)
       let items = res.items || []
-      if (!useCompanion) {
+      if (!showNSFW) {
         items = items.filter((c: any) => {
           const tags = ((c.value || {}).tags || []).map((t: string) => (t || '').toLowerCase())
           return !tags.some(t => t === 'mature' || t === 'nsfw')
@@ -1109,8 +1403,6 @@ function setupSearch() {
         const stk = parseFloat(c.meta?.effective_amount || 0) + parseFloat(c.amount || 0)
         if (currentFeedFilter === 'month') return ts > now - (30 * day)
         if (currentFeedFilter === 'week') return ts > now - (7 * day)
-        if (currentFeedFilter === 'high') return stk >= 100000
-        if (currentFeedFilter === 'veryhigh') return stk >= 500000
         return true
       })
 
@@ -1136,7 +1428,7 @@ function setupSearch() {
   global.onkeydown = (e) => {
     if (e.key === 'Enter') {
       const v = global.value.trim()
-      if (v.startsWith('lbry://')) { showView('player'); loadVideo(v); global.value = ''; return }
+      if (v.startsWith('lbry://')) { clearPlayerMedia(); showView('player'); loadVideo(v); global.value = ''; return }
       showView('search')
       input.value = v
       setTimeout(() => run(v, true), 40)
@@ -1191,7 +1483,7 @@ function renderLibrary() {
     const d = document.createElement('div')
     d.className = 'p-2 bg-[#111114] border border-[#27272a] rounded-xl flex justify-between text-sm cursor-pointer'
     d.innerHTML = `<div class="truncate">${it.title}</div><button class="text-xs bg-[#14b8a6] px-2 rounded">▶</button>`
-    d.onclick = () => { showView('player'); loadVideo(it.uri) }
+    d.onclick = () => { initialTitle = it.title; clearPlayerMedia(); showView('player'); loadVideo(it.uri) }
     vEl.appendChild(d)
   })
 
@@ -1199,10 +1491,27 @@ function renderLibrary() {
   history.slice(0, 10).forEach((it: any) => {
     const d = document.createElement('div')
     d.className = 'p-2 bg-[#111114] border border-[#27272a] rounded-xl flex justify-between text-sm cursor-pointer'
-    d.innerHTML = `<div><div class="truncate">${it.title}</div><div class="text-[10px] text-[#64748b]">${new Date(it.time).toLocaleDateString()}</div></div><button class="text-xs bg-[#334155] px-2 rounded">▶</button>`
-    d.onclick = () => { showView('player'); loadVideo(it.uri) }
+    d.innerHTML = `
+      <div class="flex items-center gap-2 flex-1 min-w-0">
+        <button class="play-btn text-xs bg-[#14b8a6] px-2 rounded">▶</button>
+        <div class="min-w-0 flex-1">
+          <div class="truncate">${it.title}</div>
+          <div class="text-[10px] text-[#64748b]">${new Date(it.time).toLocaleDateString()}</div>
+        </div>
+      </div>
+      <button class="del-btn text-xs text-[#f87171] hover:text-red-400 px-1">×</button>
+    `
+    d.querySelector('.play-btn')!.addEventListener('click', e => { e.stopPropagation(); initialTitle = it.title; clearPlayerMedia(); showView('player'); loadVideo(it.uri) })
+    d.querySelector('.del-btn')!.addEventListener('click', e => { e.stopPropagation(); deleteRecentPlay(it.uri) })
+    d.addEventListener('click', () => { initialTitle = it.title; clearPlayerMedia(); showView('player'); loadVideo(it.uri) })
     hEl.appendChild(d)
   })
+}
+
+function deleteRecentPlay(uri: string) {
+  history = history.filter((h: any) => h.uri !== uri)
+  chrome.storage.local.set({ revivel_history: history })
+  renderLibrary()
 }
 
 async function loadLibrary() {
@@ -1409,6 +1718,20 @@ function renderSettings() {
     updateSettingsStatus(statusBox)
   }
 
+  // NSFW / adult content toggle
+  const nsfwToggle = document.getElementById('settings-show-nsfw') as HTMLInputElement | null
+  if (nsfwToggle) {
+    nsfwToggle.checked = !!showNSFW
+    nsfwToggle.onchange = async () => {
+      const val = nsfwToggle.checked
+      showNSFW = val
+      try {
+        await new Promise<void>(resolve => chrome.storage.local.set({ revivel_showNSFW: val }, () => resolve()))
+      } catch (_) {}
+      // Note: switching away from Settings (e.g. to Feed/Latest) will re-fetch using the new preference.
+    }
+  }
+
   // Wallet config buttons
   const createBtn = document.getElementById('wallet-create-btn')!
   const closeBtn = document.getElementById('wallet-close-btn')!
@@ -1512,6 +1835,21 @@ async function init() {
   feedPrefetchedItems = []
   feedPrefetchPage = 0
 
+  // Load preferences early (before any list fetches that depend on them)
+  // Load saved word library preference
+  try {
+    const saved: any = await new Promise(r => chrome.storage.local.get('revivel_word_library', r))
+    if (saved?.revivel_word_library && WORD_LIBRARY_LABELS[saved.revivel_word_library]) {
+      currentWordLibrary = saved.revivel_word_library
+    }
+  } catch (_) {}
+
+  // Load NSFW preference (controls not_tags + client tag filters for all lists)
+  try {
+    const saved: any = await new Promise(r => chrome.storage.local.get('revivel_showNSFW', r))
+    showNSFW = !!saved.revivel_showNSFW
+  } catch (_) {}
+
   // Start the critical feed load *immediately* for default Feed view.
   // This gets the data flowing as early as possible for LCP.
   if (!openedWithSpecificVideo) {
@@ -1527,14 +1865,6 @@ async function init() {
   updateStatus().catch(() => {})
   loadVault().catch(() => {})
   loadHistory().catch(() => {})
-
-  // Load saved word library preference
-  try {
-    const saved: any = await new Promise(r => chrome.storage.local.get('revivel_word_library', r))
-    if (saved?.revivel_word_library && WORD_LIBRARY_LABELS[saved.revivel_word_library]) {
-      currentWordLibrary = saved.revivel_word_library
-    }
-  } catch (_) {}
 
   // Wire Word Library buttons (Feed and Search)
   const wireWordLibBtn = (id: string) => {
@@ -1559,6 +1889,27 @@ async function init() {
 
   // Default view: Feed when opening without a specific video, Player otherwise
   showView(openedWithSpecificVideo ? 'player' : 'feed')
+
+  // Wire view mode selects for lists (Feed/Latest/Search)
+  document.querySelectorAll('.view-mode-select').forEach((sel: any) => {
+    sel.addEventListener('change', () => {
+      listViewMode = sel.value as any
+      // sync other selects
+      document.querySelectorAll('.view-mode-select').forEach((s: any) => s.value = listViewMode)
+      // Re-render the target grid if possible
+      const gridId = sel.getAttribute('data-grid')
+      if (gridId === 'feed-grid' && currentView === 'feed') {
+        const g = document.getElementById('feed-grid')!
+        renderClaimGrid(feedItems, g)
+      } else if (gridId === 'latest-grid' && currentView === 'latest') {
+        const g = document.getElementById('latest-grid')!
+        renderClaimGrid(latestItems, g)
+      } else if (gridId === 'search-grid' && currentView === 'search') {
+        const g = document.getElementById('search-grid')!
+        renderClaimGrid(searchItems, g)
+      }
+    })
+  })
 
   // Infinite scroll for load-more on Feed / Latest / Search (player)
   let scrollTimer: any = null
