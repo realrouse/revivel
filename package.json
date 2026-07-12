@@ -1,6 +1,6 @@
 {
   "name": "revivel",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "ReviveL - LBRY protocol browser extension. lbry:// support + right-click uploads from anywhere.",
   "type": "module",
   "scripts": {
