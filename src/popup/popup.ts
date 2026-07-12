@@ -702,7 +702,7 @@ async function renderWallet(c: HTMLElement) {
           <input id="send-amount" placeholder="Amount" class="flex-1 bg-[#1e2937] border border-[#334155] rounded px-2 py-1 text-[10px] text-[#e2e8f0]" />
           <button id="send-btn" class="action-btn teal text-xs px-2 py-0.5">Send</button>
         </div>
-        <div class="text-[10px] text-[#64748b]">Est fee: <span id="tx-fee">0.0001</span> LBC</div>
+        <div class="text-[10px] text-[#64748b]">Est fee: <span id="tx-fee">0.0001 (est)</span> LBC</div>
         <div class="mt-1.5">
           <div class="text-[10px] text-[#64748b] mb-0.5">Last Sent</div>
           <div id="last-sent" class="text-[10px] bg-[#0a0a0f] p-1 rounded"></div>
@@ -747,36 +747,81 @@ async function loadWalletData(c: HTMLElement) {
       } catch(e) { console.error(e) }
     })
 
-    // Last received (simple, use tx history)
-    const txs = await getTransactions()
-    const received = (txs.items || []).filter((t: any) => t.type === 'received' || (t.amount && !t.spent)).slice(0,3)
+    // Last received/sent and history with real data
+    const txs = await getTransactions(1, 15)
+    const items: any[] = txs.items || txs || []
+
+    const received = items.filter((t: any) => t.type === 'received' || parseFloat(t.amount) > 0).slice(0,3)
     const recvEl = c.querySelector('#last-received') as HTMLElement
-    if (recvEl) recvEl.innerHTML = received.length ? received.map((t:any) => `${t.amount} LBC`).join('<br>') : 'None'
+    if (recvEl) recvEl.innerHTML = received.length ? received.map((t:any) => {
+      const amt = t.amount || '0'
+      const to = (t.to_address || '').slice(0,10)
+      const short = (t.txid || '').slice(0,6)
+      const addrPart = to && to !== 'unknown' ? ` to ${to}...` : ''
+      return `${amt} LBC received${addrPart} <a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>`
+    }).join('<br>') : 'None'
 
-    // Last sent
-    const sent = (txs.items || []).filter((t: any) => t.type === 'spend' || t.spent).slice(0,3)
+    const sent = items.filter((t: any) => t.to_address && t.to_address !== 'unknown').slice(0,3)
     const sentEl = c.querySelector('#last-sent') as HTMLElement
-    if (sentEl) sentEl.innerHTML = sent.length ? sent.map((t:any) => `${t.amount} LBC`).join('<br>') : 'None'
+    if (sentEl) sentEl.innerHTML = sent.length ? sent.map((t:any) => {
+      const amt = Math.abs(parseFloat(t.amount || 0))
+      const to = (t.to_address || 'unknown').slice(0,8)
+      const short = (t.txid || '').slice(0,6)
+      return `${amt} LBC to ${to}... <a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>`
+    }).join('<br>') : 'None'
 
-    // History full
+    // History
     const histEl = c.querySelector('#tx-history') as HTMLElement
     if (histEl) {
-      const list = (txs.items || []).slice(0,10).map((t:any) => `${t.txid?.slice(0,8)}... ${t.amount} LBC`).join('<br>')
+      const list = items.slice(0,10).map((t:any) => {
+        const amt = t.amount || '0'
+        const to = (t.to_address || 'unknown').slice(0,10)
+        const short = (t.txid || '').slice(0,8)
+        const toPart = to && to !== 'unknown' ? `to ${to}... ` : ''
+        return `${amt} LBC ${toPart}<a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>`
+      }).join('<br>')
       histEl.innerHTML = list || 'No transactions'
+      // add load more for 100
+      if (!histEl.querySelector('#load-more-hist')) {
+        const btn = document.createElement('button')
+        btn.id = 'load-more-hist'
+        btn.className = 'action-btn text-[9px] mt-1 px-1 py-0'
+        btn.textContent = 'Load more (100)'
+        btn.onclick = async () => {
+          const big = await getTransactions(1, 100)
+          const bigItems = big.items || big || []
+          histEl.innerHTML = bigItems.map((t:any) => {
+            const amt = t.amount || '0'
+            const to = (t.to_address || 'unknown').slice(0,10)
+            const short = (t.txid || '').slice(0,8)
+            const toPart = to && to !== 'unknown' ? `to ${to}... ` : ''
+            return `${amt} LBC ${toPart}<a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>`
+          }).join('<br>')
+        }
+        histEl.appendChild(btn)
+      }
     }
 
-    // Send fee estimate (simple fixed for now)
+    // Send fee estimate (simple fixed for now) - value already in HTML
     const feeEl = c.querySelector('#tx-fee') as HTMLElement
-    if (feeEl) feeEl.textContent = '0.0001 LBC (est)'
+    if (feeEl && !feeEl.textContent.includes('est')) feeEl.textContent = '0.0001 (est)'
 
     const sendBtn = c.querySelector('#send-btn')
     const sendAddr = c.querySelector('#send-address') as HTMLInputElement
     const sendAmt = c.querySelector('#send-amount') as HTMLInputElement
     if (sendBtn) sendBtn.addEventListener('click', async () => {
       if (!sendAddr?.value || !sendAmt?.value) return
+      const amount = sendAmt.value
+      const address = sendAddr.value
+      const fee = '0.0001'
+      const total = (parseFloat(amount) + parseFloat(fee)).toFixed(4)
+      const confirmMsg = `Are you sure you want to send ${amount} LBC to ${address} with transaction fee of ${fee} LBC totalling a spend of ${total} LBC?`
+      if (!confirm(confirmMsg)) return
       try {
-        await sendLBC(sendAddr.value, sendAmt.value)
-        alert('Sent! (check history)')
+        const result = await sendLBC(address, amount)
+        alert('Transaction submitted!')
+        // add to last sent
+        addToLastSentPopup(c, address, amount, result?.txid || 'pending')
         loadWalletData(c)
       } catch(e: any) { alert('Send failed: ' + e.message) }
     })
@@ -784,6 +829,18 @@ async function loadWalletData(c: HTMLElement) {
     console.error('Wallet load error', e)
     // show friendly if no wallet
   }
+}
+
+function addToLastSentPopup(c: HTMLElement, address: string, amount: string, txid: string) {
+  const sentEl = c.querySelector('#last-sent') as HTMLElement
+  if (!sentEl) return
+  const div = document.createElement('div')
+  div.className = 'text-[9px]'
+  const short = (txid||'').slice(0,6)
+  const link = `https://explorer.lbry.com/tx/${txid}`
+  div.innerHTML = `Sent ${amount} to ${address.slice(0,6)} <a href="${link}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a> (0 conf)`
+  sentEl.prepend(div)
+  while (sentEl.children.length > 3) sentEl.removeChild(sentEl.lastChild!)
 }
 
 // Play using beautiful floating overlay on current page (no new tab)

@@ -86,9 +86,9 @@ export async function sendLBC(address: string, amount: string, fee?: string): Pr
   })
 }
 
-export async function getTransactions(typeFilter?: string): Promise<any> {
+export async function getTransactions(page: number = 1, page_size: number = 20): Promise<any> {
   return new Promise((resolve, reject) => {
-    chrome.runtime.sendMessage({ type: 'getTransactions', type_filter: typeFilter }, (response) => {
+    chrome.runtime.sendMessage({ type: 'getTransactions', page, page_size }, (response) => {
       if (chrome.runtime.lastError) return reject(chrome.runtime.lastError)
       if (response?.ok) resolve(response.result)
       else reject(new Error(response?.error || 'Failed to get transactions'))

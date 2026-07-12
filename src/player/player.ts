@@ -34,6 +34,7 @@ let currentFeedFilter: 'all' | 'month' | 'week' | 'random' = 'all'
 let currentRandomTopN: 100 | 500 | 1000 | 5000 = 100
 let randomFeedPool: any[] = []
 let currentWordLibrary = 'general'
+let historyLoaded: any[] = []
 
 // View mode for list grids (applies to Feed, Latest, Search)
 let listViewMode: 'list' | 'details' | 'small' | 'medium' | 'big' | 'huge' = 'medium'
@@ -1589,16 +1590,37 @@ function renderWallet() {
   })
   if (genAddr) genAddr.addEventListener('click', loadRecv)
 
-  // Send
-  feeEl.textContent = '0.0001 LBC (est)'
+  // Send with confirmation
+  feeEl.textContent = '0.0001 (est)'
   if (sendBtn) sendBtn.addEventListener('click', async () => {
     if (!sendAddr.value || !sendAmt.value) return
+    const amount = sendAmt.value
+    const address = sendAddr.value
+    const fee = '0.0001'
+    const total = (parseFloat(amount) + parseFloat(fee)).toFixed(4)
+    const confirmMsg = `Are you sure you want to send ${amount} LBC to ${address} with transaction fee of ${fee} LBC totalling a spend of ${total} LBC?`
+    if (!confirm(confirmMsg)) return
     try {
-      await sendLBC(sendAddr.value, sendAmt.value)
+      const result = await sendLBC(address, amount)
       alert('Transaction submitted!')
+      // Add to last sent with status
+      addToLastSent(address, amount, result?.txid || 'pending')
       loadWalletData()
     } catch (e: any) { alert('Send failed: ' + (e.message || e)) }
   })
+
+function addToLastSent(address: string, amount: string, txid: string) {
+  const lastSent = document.getElementById('wallet-last-sent')!
+  const div = document.createElement('div')
+  div.className = 'mb-1 text-xs'
+  const short = txid.slice(0,10) + '...'
+  const link = `https://explorer.lbry.com/tx/${txid}`
+  div.innerHTML = `Sent ${amount} LBC to ${address.slice(0,12)}... <a href="${link}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a> <span class="text-[#64748b]">0 conf (just sent)</span>`
+  // prepend
+  lastSent.prepend(div)
+  // keep only last 3
+  while (lastSent.children.length > 3) lastSent.removeChild(lastSent.lastChild!)
+}
 
   // History & last tx
   loadWalletData()
@@ -1610,20 +1632,68 @@ async function loadWalletData() {
   const histEl = document.getElementById('wallet-history')!
 
   try {
-    const txs = await getTransactions()
-    const items = txs.items || txs || []
+    // fetch last ~15 for history, last 3 for received/sent
+    const txs = await getTransactions(1, 15)
+    const items: any[] = txs.items || txs || []
 
-    const received = items.filter((t: any) => (t.type === 'received' || t.received)).slice(0, 3)
-    lastRecv.innerHTML = received.length ? received.map((t:any) => `${t.amount} LBC @ ${t.txid?.slice(0,8)}`).join('<br>') : 'None'
+    const received = items.filter((t: any) => t.type === 'received' || parseFloat(t.amount) > 0).slice(0, 3)
+    lastRecv.innerHTML = received.length ? received.map((t:any) => {
+      const amt = t.amount || '0'
+      const to = (t.to_address || '').slice(0,12)
+      const short = (t.txid || '').slice(0,8)
+      const addrPart = to && to !== 'unknown' ? ` to ${to}...` : ''
+      return `${amt} LBC received${addrPart} <a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>`
+    }).join('<br>') : 'None'
 
-    const sent = items.filter((t: any) => (t.type === 'spend' || t.sent)).slice(0, 3)
-    lastSent.innerHTML = sent.length ? sent.map((t:any) => `${t.amount} LBC @ ${t.txid?.slice(0,8)}`).join('<br>') : 'None'
+    const sent = items.filter((t: any) => t.to_address && t.to_address !== 'unknown').slice(0, 3)
+    lastSent.innerHTML = sent.length ? sent.map((t:any) => {
+      const amt = Math.abs(parseFloat(t.amount || 0))
+      const to = (t.to_address || 'unknown').slice(0,10)
+      const short = (t.txid || '').slice(0,8)
+      const conf = t.confirmations ? ` ${t.confirmations} conf` : ''
+      return `${amt} LBC to ${to}... <a href="https://explorer.lbry.com/tx/${t.txid}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${short}</a>${conf}`
+    }).join('<br>') : 'None'
 
-    const list = items.slice(0,10).map((t:any) => `${t.txid?.slice(0,10)}... ${t.amount || '?'} LBC`).join('<br>')
-    histEl.innerHTML = list || 'No transactions yet'
+    // History: last 15 with full details
+    renderHistory(histEl, items.slice(0,15), false)
   } catch (e) {
     lastRecv.textContent = lastSent.textContent = '—'
     histEl.textContent = 'Failed to load history (SPV wallet required)'
+  }
+}
+
+function renderHistory(el: HTMLElement, items: any[], isFull: boolean) {
+  if (!items.length) {
+    el.innerHTML = 'No transactions yet'
+    return
+  }
+  const html = items.map((t:any) => {
+    const amt = t.amount
+    const to = (t.to_address || 'unknown').slice(0,12)
+    const txh = t.txid || ''
+    const shortTx = txh.slice(0,10) + '...'
+    const link = `https://explorer.lbry.com/tx/${txh}`
+    const conf = t.confirmations ? `${t.confirmations} conf` : ''
+    const toPart = to && to !== 'unknown' ? `to ${to}... ` : ''
+    return `<div class="mb-1">${amt} LBC ${toPart}<a href="${link}" target="_blank" class="text-[#14b8a6]" style="color:#14b8a6">${shortTx}</a> ${conf}</div>`
+  }).join('')
+  el.innerHTML = html
+  if (!isFull) {
+    // add load more if not already
+    if (!el.querySelector('#load-more-tx')) {
+      const btn = document.createElement('button')
+      btn.id = 'load-more-tx'
+      btn.className = 'action-btn text-xs mt-2'
+      btn.textContent = 'Load more (last 100)'
+      btn.onclick = async () => {
+        try {
+          const txs = await getTransactions(1, 100)
+          historyLoaded = txs.items || txs || []
+          renderHistory(el, historyLoaded, true)
+        } catch(e) { alert('Failed to load more') }
+      }
+      el.appendChild(btn)
+    }
   }
 }
 

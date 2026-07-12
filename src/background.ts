@@ -1129,21 +1129,67 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
       return true
     }
     getDefaultAccountId().then(accountId => {
-      // per INTEGRATION.md: use txo_list with type array for history
+      // Use transaction_list for richer tx data (inputs/outputs for sender/receiver)
       const txParams: any = {
+        page: msg.page || 1,
         page_size: msg.page_size || 20,
-        resolve: false,
-        type: ["spend", "support", "purchase", "received"]  // adjust as needed
       }
       if (accountId) txParams.account_id = accountId
-      if (msg.type_filter) txParams.type = [msg.type_filter]
       rpcCall('txo_list', txParams)
-        .then((result) => sendResponse({ ok: true, result }))
+        .then((result) => {
+          const rawItems = (result.items || result || [])
+          const items = rawItems.map((txo: any) => {
+            const amtNum = parseFloat(txo.amount || txo.value || 0) || 0
+            const addr = txo.address || txo.claim_address || txo.recipient || 'unknown'
+            const txid = txo.txid || txo.id || ''
+            let conf = 0
+            if (typeof txo.confirmations === 'number') conf = txo.confirmations
+            else if (typeof txo.height === 'number') conf = 0
+
+            const amountStr = amtNum.toString()
+            const type = 'received'
+
+            return {
+              ...txo,
+              txid,
+              from_address: 'unknown',
+              to_address: addr,
+              amount: amountStr,
+              confirmations: conf,
+              type
+            }
+          })
+          sendResponse({ ok: true, result: { items, total: result.total || items.length } })
+        })
         .catch((err) => sendResponse({ ok: false, error: err.message }))
     }).catch(() => {
-      const txParams: any = { page_size: msg.page_size || 20, resolve: false, type: ["spend", "support", "purchase", "received"] }
+      const txParams: any = { page: msg.page || 1, page_size: msg.page_size || 20 }
       rpcCall('txo_list', txParams)
-        .then((result) => sendResponse({ ok: true, result }))
+        .then((result) => {
+          const rawItems = (result.items || result || [])
+          const items = rawItems.map((txo: any) => {
+            const amtNum = parseFloat(txo.amount || txo.value || 0) || 0
+            const addr = txo.address || txo.claim_address || txo.recipient || 'unknown'
+            const txid = txo.txid || txo.id || ''
+            let conf = 0
+            if (typeof txo.confirmations === 'number') conf = txo.confirmations
+            else if (typeof txo.height === 'number') conf = 0
+
+            const amountStr = amtNum.toString()
+            const type = 'received'
+
+            return {
+              ...txo,
+              txid,
+              from_address: 'unknown',
+              to_address: addr,
+              amount: amountStr,
+              confirmations: conf,
+              type
+            }
+          })
+          sendResponse({ ok: true, result: { items, total: result.total || items.length } })
+        })
         .catch((err) => sendResponse({ ok: false, error: err.message }))
     })
     return true
