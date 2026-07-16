@@ -146,6 +146,67 @@ export async function publishStream(params: any): Promise<any> {
   })
 }
 
+export async function getChannels(): Promise<any> {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage({ type: 'getChannels' }, (response) => {
+      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError)
+      if (response?.ok) resolve(response.result)
+      else reject(new Error(response?.error || 'Failed to get channels'))
+    })
+  })
+}
+
+export async function stageFile(file: File): Promise<string> {
+  // Route through background to centralize native messaging (consistent with creds/rpc)
+  // and allow logging/diagnostics.
+  async function sendNative(msg: any): Promise<any> {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage({ type: 'sendNativeMessage', host: 'revivel_companion', message: msg }, (response) => {
+        if (chrome.runtime.lastError) return reject(chrome.runtime.lastError)
+        if (response?.ok) resolve(response.result)
+        else reject(new Error(response?.error || 'sendNativeMessage failed'))
+      })
+    })
+  }
+
+  // Use native messaging via background to stage the file and get a daemon-visible path.
+  // Chunks to support large files/videos without loading everything at once in one message.
+  const CHUNK_SIZE = 1024 * 1024 // 1 MiB
+  const filename = file.name
+
+  // begin
+  let resp: any = await sendNative({
+    type: 'begin_stage_file',
+    filename
+  })
+  if (!resp?.success) throw new Error(resp?.error || 'begin_stage_file failed')
+  const stagedPath: string = resp.path
+
+  // chunks
+  for (let offset = 0; offset < file.size; offset += CHUNK_SIZE) {
+    const slice = file.slice(offset, Math.min(offset + CHUNK_SIZE, file.size))
+    const buf = await slice.arrayBuffer()
+    const bytes = new Uint8Array(buf)
+    let binary = ''
+    for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i])
+    const b64 = btoa(binary)
+    resp = await sendNative({
+      type: 'append_file_chunk',
+      path: stagedPath,
+      chunk: b64
+    })
+    if (!resp?.success) throw new Error('append_file_chunk failed')
+  }
+
+  // finish
+  resp = await sendNative({
+    type: 'finish_stage_file',
+    path: stagedPath
+  })
+  if (!resp?.success || !resp.path) throw new Error(resp?.error || 'finish_stage_file failed')
+  return resp.path as string
+}
+
 export async function searchLbryClaims(params: any = {}): Promise<any> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
@@ -162,6 +223,27 @@ export async function searchLbryClaims(params: any = {}): Promise<any> {
 }
 
 // Helper: pick a playable URL from resolve result (prefers daemon/public streaming_url)
+export function getThumbnail(claim: any): string {
+  if (!claim) return 'https://picsum.photos/id/1015/320/180'
+  const v = claim.value || {}
+  // Check multiple possible locations for thumbnail URL (different RPC responses)
+  const thumbUrl = (claim.thumbnail && claim.thumbnail.url) ||
+                   (v.thumbnail && v.thumbnail.url) ||
+                   (v.thumbnail) ||
+                   (claim.meta && claim.meta.thumbnail && claim.meta.thumbnail.url)
+  if (thumbUrl && typeof thumbUrl === 'string' && thumbUrl.trim()) {
+    return thumbUrl
+  }
+  // For image claims without explicit thumbnail, use the content itself as preview
+  const mediaType = (v.source?.media_type || v.stream?.source?.media_type || '').toLowerCase()
+  const streamType = (v.stream?.stream_type || v.stream_type || '').toLowerCase()
+  if (streamType === 'image' || mediaType.startsWith('image/')) {
+    const playable = getPlayableUrl(claim)
+    if (playable) return playable
+  }
+  return 'https://picsum.photos/id/1015/320/180'
+}
+
 export function getPlayableUrl(claim: LbryClaim | any): string | null {
   if (!claim) return null
 
@@ -653,4 +735,61 @@ export function dedupClaims(existing: any[], incoming: any[]): any[] {
     out.push(c);
   });
   return out;
+}
+
+export function isClaimId(str: string): boolean {
+  return /^[a-f0-9]{40}$/i.test((str || '').trim());
+}
+
+/**
+ * Returns either an <img> tag string for a real thumbnail (from full claim or flat item),
+ * or a colored placeholder div with up to 24 characters of the title (first 12 on line 1, next 12 on line 2).
+ * Used across all claim lists (Feed, Latest, Search, Library, etc.) in both popup and player.
+ */
+export function createThumbHtml(item: any, aspectRatio = '16/9', extraStyle = '', includeBadge = true): string {
+  const title = (item && (item.title || item.name)) || 'Untitled';
+  let rawThumb = '';
+  if (item && (item.value || item.claim_type || item.canonical_url || item.claim_id)) {
+    // Looks like a full claim object - use getThumbnail for real logic
+    rawThumb = getThumbnail(item);
+  } else {
+    rawThumb = item && (item.imageData || item.thumbnail || item.thumb || '');
+  }
+  const isValidThumb = rawThumb && typeof rawThumb === 'string' && rawThumb.trim() !== '' && !rawThumb.includes('picsum.photos');
+
+  const isChannel = item && (
+    item.claim_type === 'channel' ||
+    (item.name && String(item.name).startsWith('@'))
+  );
+
+  const baseStyle = `width:100%; height:auto; aspect-ratio:${aspectRatio}; ${extraStyle}; position: relative; overflow: hidden;`;
+
+  let thumbContent = '';
+  if (isValidThumb) {
+    thumbContent = `<img src="${rawThumb}" loading="lazy" style="width:100%; height:100%; object-fit: cover; display: block;">`;
+  } else {
+    // Random-ish but deterministic color from title
+    let hash = 0;
+    for (let i = 0; i < title.length; i++) {
+      hash = title.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const hue = Math.abs(hash) % 360;
+    const bg = `hsl(${hue}, 68%, 48%)`;
+
+    // First 12 chars on line 1, next 12 on line 2 (up to 24 total)
+    const line1 = title.substring(0, 12);
+    const line2 = title.substring(12, 24);
+    const textContent = line2 ? `${line1}<br>${line2}` : line1;
+
+    thumbContent = `<div style="width:100%; height:100%; background:${bg}; display:flex; flex-direction:column; align-items:center; justify-content:center; color:#fff; font-size:0.95rem; font-weight:700; text-align:center; padding:2px 4px; box-sizing:border-box; overflow:hidden; border-radius:3px; user-select:none; line-height:1.1;">${textContent}</div>`;
+  }
+
+  let html = `<div style="${baseStyle}">${thumbContent}`;
+
+  if (isChannel && includeBadge) {
+    html += `<div style="position:absolute; top:3px; left:3px; background:#530087; color:#fff; font-size:10px; line-height:1; padding:4px 12px; border-radius:10px; font-weight:600; z-index:10; white-space:nowrap; text-shadow:1px 1px black;">Channel</div>`;
+  }
+
+  html += `</div>`;
+  return html;
 }

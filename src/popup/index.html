@@ -17,6 +17,9 @@
 
     html, body {
       width: 500px;
+      /* Popup size is determined by this + content. Chrome may clamp popup height;
+         setting larger here (e.g. 740px) previously caused internal scroll without
+         expanding the actual popup frame. Per requirements, keep at 640px to avoid scroll. */
       height: 640px;
       overflow: hidden;
       margin: 0;
@@ -96,6 +99,27 @@
       background: #1e2937;
     }
     .tab-active {
+      background: #14b8a6;
+      color: white;
+      font-weight: 600;
+    }
+
+    .sub-tab {
+      padding: 3px 10px;
+      font-size: 10px;
+      font-weight: 500;
+      color: #94a3b8;
+      background: transparent;
+      border: none;
+      border-radius: 9999px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .sub-tab:hover {
+      color: #e2e8f0;
+      background: #1e2937;
+    }
+    .sub-tab.active {
       background: #14b8a6;
       color: white;
       font-weight: 600;
@@ -210,6 +234,9 @@
       min-height: 0;
       /* Reserve space at bottom so last content isn't hidden behind the fixed bar */
       padding-bottom: 48px;
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+      padding-top: 1.25rem;
     }
 
     .bottom-bar {
@@ -282,7 +309,42 @@
     .grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .gap-1 { gap: 4px; }
     .gap-1\.5 { gap: 6px; }
+    .gap-2 { gap: 8px; }
+    .gap-3 { gap: 12px; }
+    .gap-4 { gap: 16px; }
     .aspect-video { aspect-ratio: 16 / 9; }
+
+    /* Spacing utilities for higher margins/paddings (wallet/upload/settings) */
+    .px-4 { padding-left: 1.25rem; padding-right: 1.25rem; }
+    .px-5 { padding-left: 1.5rem; padding-right: 1.5rem; }
+    .px-6 { padding-left: 1.75rem; padding-right: 1.75rem; }
+    .px-7 { padding-left: 2rem; padding-right: 2rem; }
+    .px-8 { padding-left: 2.25rem; padding-right: 2.25rem; }
+    .py-3 { padding-top: 1rem; padding-bottom: 1rem; }
+    .py-4 { padding-top: 1.25rem; padding-bottom: 1.25rem; }
+    .py-5 { padding-top: 1.5rem; padding-bottom: 1.5rem; }
+    .p-4 { padding: 1.25rem; }
+    .p-5 { padding: 1.5rem; }
+    .p-6 { padding: 1.75rem; }
+    .p-7 { padding: 2rem; }
+    .p-8 { padding: 2.25rem; }
+    .mb-4 { margin-bottom: 1.25rem; }
+    .mb-5 { margin-bottom: 1.5rem; }
+    .mb-6 { margin-bottom: 1.75rem; }
+    .mb-7 { margin-bottom: 2rem; }
+    .mb-8 { margin-bottom: 2.25rem; }
+    .mt-4 { margin-top: 1.25rem; }
+    .mt-5 { margin-top: 1.5rem; }
+    .mt-6 { margin-top: 1.75rem; }
+    .mt-7 { margin-top: 2rem; }
+    .mt-8 { margin-top: 2.25rem; }
+    .mt-10 { margin-top: 2.75rem; }
+    .mt-12 { margin-top: 3.25rem; }
+    .space-y-4 > * + * { margin-top: 1.25rem; }
+    .space-y-5 > * + * { margin-top: 1.5rem; }
+    .space-y-6 > * + * { margin-top: 1.75rem; }
+    .space-y-7 > * + * { margin-top: 2rem; }
+    .space-y-8 > * + * { margin-top: 2.25rem; }
 
     /* Misc utilities + player-like */
     .rounded { border-radius: 4px; }
@@ -360,7 +422,7 @@
 </head>
 <body class="bg-[#0a0a0f] text-[#e2e8f0]">
   <!-- Header - match player style -->
-  <div class="bg-[#111114] border-b border-[#27272a] px-3 py-2 flex items-center justify-between" style="min-height:44px">
+  <div class="bg-[#111114] border-b border-[#27272a] px-4 py-3 flex items-center justify-between" style="min-height:48px">
     <div class="flex items-center gap-x-2">
       <img src="icons/icon48.png" alt="ReviveL" class="w-6 h-6 rounded-xl">
       <span class="logo-font text-[15px] font-semibold tracking-[-0.5px]">ReviveL</span>
@@ -389,15 +451,17 @@
   </div>
 
   <!-- Tabs - pill style like player nav -->
-  <div class="px-3 flex gap-x-1 bg-[#111114] pb-2 pt-0.5">
+  <div class="px-4 flex gap-x-1 bg-[#111114] pb-2 pt-1">
     <button data-tab="feed" class="tab-btn flex-1 font-semibold tab-active">Feed</button>
     <button data-tab="new" class="tab-btn flex-1">Latest</button>
-    <button data-tab="vault" class="tab-btn flex-1">Vault</button>
+    <button data-tab="library" class="tab-btn flex-1">Library</button>
+    <button data-tab="channels" class="tab-btn flex-1">Channels</button>
+    <button data-tab="upload" class="tab-btn flex-1">Upload</button>
     <button data-tab="wallet" class="tab-btn flex-1">Wallet</button>
   </div>
 
   <!-- View options for list (Feed/Latest) -->
-  <div class="px-3 pb-1 bg-[#111114] flex items-center gap-x-2 text-[10px]" id="popup-view-options" style="display:none;">
+  <div class="px-4 pb-2 bg-[#111114] flex items-center gap-x-2 text-[10px]" id="popup-view-options" style="display:none;">
     <span class="text-[#64748b]">View:</span>
     <select id="popup-view-mode" class="bg-[#1e2937] border border-[#334155] rounded px-1.5 py-0.5 text-[10px] text-[#e2e8f0]">
       <option value="list">List</option>
@@ -415,7 +479,7 @@
   </div>
 
   <!-- Bottom Bar - actions like player (always visible) -->
-  <div class="bottom-bar px-3 py-2 flex gap-x-2">
+  <div class="bottom-bar px-4 py-3 flex gap-x-2">
     <button id="upload-btn" 
             class="flex-1 flex items-center justify-center gap-x-1 action-btn">
       <span>↑</span>

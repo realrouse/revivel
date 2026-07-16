@@ -722,6 +722,23 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
     getStatusViaRpc().then(sendResponse)
     return true
   }
+  if (msg.type === 'sendNativeMessage') {
+    (async () => {
+      console.log('[ReviveL bg] sendNativeMessage:', msg.host, msg.message?.type);
+      try {
+        const response = await chrome.runtime.sendNativeMessage(
+          msg.host || 'revivel_companion',
+          msg.message
+        );
+        console.log('[ReviveL bg] native response for', msg.message?.type, response);
+        sendResponse({ ok: true, result: response });
+      } catch (err: any) {
+        console.warn('[ReviveL bg] native error for', msg.message?.type, err);
+        sendResponse({ ok: false, error: err.message || String(err) });
+      }
+    })();
+    return true;
+  }
   if (msg.type === 'setDaemonUrl') {
     daemonUrl = msg.url || null
     clearRpcCredentials()
@@ -1021,16 +1038,79 @@ chrome.runtime.onMessage.addListener((msg, _s, sendResponse) => {
 
   // Future: publish stub
   if (msg.type === 'publish') {
+    console.log('[ReviveL bg] publish with params:', JSON.stringify(msg.params).slice(0,200));
     // Real publish when daemon with wallet is available
     if (!daemonUrl) {
       sendResponse({ ok: false, error: 'No local daemon connected. Start ReviveL Companion.' })
       return true
     }
-    // For now, forward the params (user of Companion is expected to have files accessible or use path)
-    // In practice for browser uploads we may need to save temp file first.
-    rpcCall('stream_create', msg.params || {})
-      .then((result) => sendResponse({ ok: true, result }))
-      .catch((err) => sendResponse({ ok: false, error: err.message }))
+    // Forward the params. Companion (if used) handles staging file_path for the daemon.
+    // Only send supported stream_create fields: name, bid, title, description, file_path, channel_name (optional).
+    // Do not include file_type, file_name, file_size etc. as they can cause SDK errors like 'Stream' object has no attribute 'file_type'.
+    let method = 'stream_create';
+    let publishParams = { ...(msg.params || {}) };
+    if (publishParams.create_channel || publishParams.is_channel) {
+      method = 'channel_create';
+      delete publishParams.create_channel;
+      delete publishParams.is_channel;
+      if (publishParams.name && !publishParams.name.startsWith('@')) {
+        publishParams.name = '@' + publishParams.name;
+      }
+    } else {
+      // Sanitize: remove fields that are not valid for stream_create and cause
+      // errors like "'Stream' object has no attribute 'file_type'" in lbrynet/SDK.
+      delete publishParams.file_type;
+      delete publishParams.file_name;
+      delete publishParams.file_size;
+      // file_path is the correct one for local staged files.
+    }
+    rpcCall(method, publishParams)
+      .then((result) => {
+        console.log('[ReviveL bg] ' + method + ' result:', result);
+        sendResponse({ ok: true, result });
+      })
+      .catch((err) => {
+        console.warn('[ReviveL bg] ' + method + ' error:', err);
+        sendResponse({ ok: false, error: err.message });
+      })
+    return true
+  }
+
+  if (msg.type === 'getChannels') {
+    if (!daemonUrl) {
+      sendResponse({ ok: false, error: 'No daemon' })
+      return true
+    }
+    getDefaultAccountId().then(accountId => {
+      const params: any = accountId ? { account_id: accountId } : {}
+      // channel_list lists channels for the account/wallet
+      rpcCall('channel_list', params)
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }))
+    }).catch(() => {
+      rpcCall('channel_list', {})
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }))
+    })
+    return true
+  }
+
+  if (msg.type === 'getMyClaims') {
+    if (!daemonUrl) {
+      sendResponse({ ok: false, error: 'No daemon' })
+      return true
+    }
+    getDefaultAccountId().then(accountId => {
+      const params: any = accountId ? { account_id: accountId, page_size: 50 } : { page_size: 50 }
+      // claim_list gets claims controlled/created by the account
+      rpcCall('claim_list', params)
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }))
+    }).catch(() => {
+      rpcCall('claim_list', { page_size: 50 })
+        .then((result) => sendResponse({ ok: true, result }))
+        .catch((err) => sendResponse({ ok: false, error: err.message }))
+    })
     return true
   }
 
